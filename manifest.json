@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "AI Bilingual Subtitles - 双语字幕翻译",
+  "version": "2.2.0",
+  "description": "为在线视频添加 AI 驱动的中英双语字幕，支持 Google 翻译和 OpenAI 兼容接口，预翻译无延迟",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["subtitle.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["subtitle.css"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

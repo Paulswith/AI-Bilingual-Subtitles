@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Generate Icons</title>
+</head>
+<body>
+  <h2>点击下载图标</h2>
+  <canvas id="canvas16" width="16" height="16"></canvas>
+  <canvas id="canvas48" width="48" height="48"></canvas>
+  <canvas id="canvas128" width="128" height="128"></canvas>
+
+  <br><br>
+
+  <button onclick="download('canvas16', 'icon16.png')">下载 16x16</button>
+  <button onclick="download('canvas48', 'icon48.png')">下载 48x48</button>
+  <button onclick="download('canvas128', 'icon128.png')">下载 128x128</button>
+
+  <script>
+    function drawIcon(canvas, size) {
+      const ctx = canvas.getContext('2d');
+
+      // 背景
+      ctx.fillStyle = '#4ade80';
+      ctx.beginPath();
+      ctx.roundRect(0, 0, size, size, size * 0.125);
+      ctx.fill();
+
+      // 文字
+      ctx.fillStyle = '#000';
+      ctx.font = `bold ${size * 0.6}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('双', size/2, size/2 + size*0.05);
+    }
+
+    function download(canvasId, filename) {
+      const canvas = document.getElementById(canvasId);
+      const link = document.createElement('a');
+      link.download = filename;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+
+    // 绘制所有尺寸
+    drawIcon(document.getElementById('canvas16'), 16);
+    drawIcon(document.getElementById('canvas48'), 48);
+    drawIcon(document.getElementById('canvas128'), 128);
+  </script>
+</body>
+</html>
