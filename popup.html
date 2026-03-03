@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 双语字幕设置</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #1a1a1a;
+      color: #fff;
+      min-width: 360px;
+      padding: 16px;
+    }
+
+    h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    h1::before {
+      content: "📺";
+    }
+
+    .section {
+      background: #2d2d2d;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .row:last-child {
+      margin-bottom: 0;
+    }
+
+    label {
+      font-size: 14px;
+      color: #ccc;
+    }
+
+    select, input {
+      padding: 8px 12px;
+      background: #3d3d3d;
+      border: 1px solid #4d4d4d;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 13px;
+      outline: none;
+      min-width: 140px;
+    }
+
+    select:focus, input:focus {
+      border-color: #4ade80;
+    }
+
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      margin-top: 4px;
+    }
+
+    button {
+      padding: 10px 16px;
+      background: #4ade80;
+      border: none;
+      border-radius: 4px;
+      color: #000;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    button:hover {
+      background: #22c55e;
+    }
+
+    button:active {
+      transform: scale(0.98);
+    }
+
+    button.secondary {
+      background: #3d3d3d;
+      color: #fff;
+    }
+
+    button.secondary:hover {
+      background: #4d4d4d;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .btn-group button {
+      flex: 1;
+    }
+
+    .status {
+      padding: 10px;
+      background: #2d2d2d;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-top: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status.loading {
+      color: #fbbf24;
+    }
+
+    .status.success {
+      color: #4ade80;
+    }
+
+    .status.error {
+      color: #f87171;
+    }
+
+    .progress-bar {
+      height: 4px;
+      background: #3d3d3d;
+      border-radius: 2px;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: #4ade80;
+      transition: width 0.3s;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .api-config-section {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #3d3d3d;
+    }
+
+    .api-config-section label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 12px;
+      color: #999;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: #666;
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+
+    .hint a {
+      color: #4ade80;
+      text-decoration: none;
+    }
+
+    footer {
+      font-size: 11px;
+      color: #666;
+      text-align: center;
+      margin-top: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    footer a {
+      color: #4ade80;
+      text-decoration: none;
+    }
+
+    .badge {
+      background: #4ade80;
+      color: #000;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    /* 服务说明 */
+    .service-desc {
+      font-size: 11px;
+      color: #888;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>AI 双语字幕</h1>
+
+  <div class="section">
+    <div class="section-title">📊 字幕状态</div>
+    <div class="row">
+      <label>字幕数量:</label>
+      <span id="subtitle-count">-</span>
+    </div>
+    <div class="row">
+      <label>已翻译:</label>
+      <span id="translated-count">-</span>
+    </div>
+    <div class="row">
+      <label>缓存状态:</label>
+      <span id="cache-status">-</span>
+    </div>
+    <div id="progress-container" class="hidden">
+      <div class="progress-bar">
+        <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">🎨 显示设置</div>
+    <div class="row">
+      <label>显示模式:</label>
+      <select id="display-mode">
+        <option value="bilingual">中英双语</option>
+        <option value="chinese">仅中文</option>
+        <option value="english">仅英文</option>
+      </select>
+    </div>
+    <div class="btn-group">
+      <button id="toggle-subs" class="secondary">隐藏字幕</button>
+      <button id="toggle-panel" class="secondary">打开面板</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">🌐 翻译服务</div>
+    <div class="row">
+      <label>翻译服务:</label>
+      <select id="translation-service">
+        <option value="google">Google 翻译 (免费)</option>
+        <option value="openai">OpenAI 兼容接口</option>
+      </select>
+    </div>
+    <div class="service-desc" id="service-desc">
+      使用 Google 免费翻译接口，无需配置
+    </div>
+
+    <div id="openai-config" class="api-config-section hidden">
+      <label>API Base URL</label>
+      <input type="text" id="openai-baseurl" placeholder="https://api.openai.com/v1">
+
+      <label style="margin-top: 8px;">API Key</label>
+      <input type="password" id="openai-apikey" placeholder="sk-...">
+
+      <label style="margin-top: 8px;">模型名称</label>
+      <input type="text" id="openai-model" placeholder="gpt-3.5-turbo">
+
+      <button id="save-openai-config" style="width: 100%; margin-top: 12px;">保存配置</button>
+
+      <div class="hint">
+        💡 支持任何 OpenAI 兼容接口，如 Azure OpenAI、DeepSeek、月之暗面等
+      </div>
+    </div>
+
+    <button id="test-translation" class="secondary" style="width: 100%; margin-top: 12px;">
+      测试翻译服务
+    </button>
+  </div>
+
+  <div class="btn-group">
+    <button id="translate-btn">重新翻译</button>
+    <button id="clear-cache-btn" class="secondary">清除缓存</button>
+    <button id="export-btn" class="secondary">导出字幕</button>
+  </div>
+
+  <div id="status" class="status hidden"></div>
+
+  <footer>
+    <span>v2.1.1</span>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <a href="options.html" target="_blank" style="color: #4ade80; text-decoration: none; font-size: 12px;">⚙️ 高级设置</a>
+      <a href="https://github.com" target="_blank" style="color: #4ade80; text-decoration: none;">GitHub</a>
+    </div>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

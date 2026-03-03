@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__browser__browser_navigate",
+      "mcp__browser__browser_screenshot",
+      "mcp__browser__browser_tab_list",
+      "mcp__browser__browser_get_markdown",
+      "mcp__browser__browser_evaluate",
+      "Bash(chmod +x:*)"
+    ]
+  }
+}

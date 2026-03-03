@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 双语字幕 - 高级设置</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --primary: #4ade80;
+      --primary-dark: #22c55e;
+      --bg-dark: #0f0f0f;
+      --bg-card: #1a1a1a;
+      --bg-input: #2d2d2d;
+      --bg-hover: #3d3d3d;
+      --text-primary: #fff;
+      --text-secondary: #a0a0a0;
+      --text-muted: #666;
+      --border: #3d3d3d;
+      --error: #f87171;
+      --success: #4ade80;
+      --warning: #fbbf24;
+      --info: #60a5fa;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg-dark);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    .logo {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .version {
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    /* Card Styles */
+    .card {
+      background: var(--bg-card);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      border: 1px solid var(--border);
+    }
+
+    .card-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .card-title .icon {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-hover);
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    /* Form Elements */
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-group:last-child {
+      margin-bottom: 0;
+    }
+
+    label {
+      display: block;
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 8px;
+      color: var(--text-secondary);
+    }
+
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    select,
+    textarea {
+      width: 100%;
+      padding: 12px 16px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.1);
+    }
+
+    input::placeholder,
+    textarea::placeholder {
+      color: var(--text-muted);
+    }
+
+    select {
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 36px;
+    }
+
+    textarea {
+      min-height: 100px;
+      resize: vertical;
+      font-family: inherit;
+      line-height: 1.6;
+    }
+
+    .input-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    /* Toggle Switch */
+    .toggle-group {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .toggle {
+      position: relative;
+      width: 52px;
+      height: 28px;
+      cursor: pointer;
+    }
+
+    .toggle input {
+      display: none;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--bg-hover);
+      border-radius: 14px;
+      transition: background 0.3s;
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      height: 22px;
+      width: 22px;
+      left: 3px;
+      bottom: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.3s;
+    }
+
+    .toggle input:checked + .toggle-slider {
+      background: var(--primary);
+    }
+
+    .toggle input:checked + .toggle-slider::before {
+      transform: translateX(24px);
+    }
+
+    /* Buttons */
+    .btn {
+      padding: 12px 24px;
+      background: var(--primary);
+      border: none;
+      border-radius: 8px;
+      color: #000;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn:hover {
+      background: var(--primary-dark);
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .btn-secondary:hover {
+      background: #4d4d4d;
+    }
+
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+    }
+
+    .btn-outline:hover {
+      background: var(--bg-hover);
+    }
+
+    .btn-danger {
+      background: var(--error);
+      color: #fff;
+    }
+
+    .btn-danger:hover {
+      background: #ef4444;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    /* Status Messages */
+    .status {
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status.hidden {
+      display: none;
+    }
+
+    .status.success {
+      background: rgba(74, 222, 128, 0.1);
+      border: 1px solid var(--success);
+      color: var(--success);
+    }
+
+    .status.error {
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid var(--error);
+      color: var(--error);
+    }
+
+    .status.warning {
+      background: rgba(251, 191, 36, 0.1);
+      border: 1px solid var(--warning);
+      color: var(--warning);
+    }
+
+    .status.info {
+      background: rgba(96, 165, 250, 0.1);
+      border: 1px solid var(--info);
+      color: var(--info);
+    }
+
+    /* Info Section */
+    .info-section {
+      background: var(--bg-input);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+
+    .info-section h4 {
+      font-size: 14px;
+      margin-bottom: 8px;
+      color: var(--text-secondary);
+    }
+
+    .info-section p {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .info-section p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* Cache Stats */
+    .cache-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .stat-item {
+      background: var(--bg-input);
+      padding: 16px;
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--primary);
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* Progress Bar */
+    .progress-container {
+      margin-top: 16px;
+    }
+
+    .progress-bar {
+      height: 8px;
+      background: var(--bg-input);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--primary);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .progress-text {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 8px;
+      text-align: center;
+    }
+
+    /* Service Config Section */
+    .service-config {
+      display: none;
+    }
+
+    .service-config.active {
+      display: block;
+    }
+
+    /* Advanced Settings Grid */
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+    }
+
+    /* Permission List */
+    .permission-list {
+      list-style: none;
+    }
+
+    .permission-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px;
+      background: var(--bg-input);
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+
+    .permission-list li:last-child {
+      margin-bottom: 0;
+    }
+
+    .permission-icon {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--primary);
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .permission-content {
+      flex: 1;
+    }
+
+    .permission-name {
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .permission-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      padding: 40px 20px;
+      border-top: 1px solid var(--border);
+      margin-top: 40px;
+    }
+
+    footer p {
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    footer a {
+      color: var(--primary);
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      text-decoration: underline;
+    }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 24px;
+      background: var(--bg-input);
+      padding: 4px;
+      border-radius: 10px;
+    }
+
+    .tab {
+      flex: 1;
+      padding: 10px 16px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+
+    .tab:hover {
+      color: var(--text-primary);
+    }
+
+    .tab.active {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    /* Test Result */
+    .test-result {
+      margin-top: 12px;
+      padding: 16px;
+      background: var(--bg-input);
+      border-radius: 8px;
+      display: none;
+    }
+
+    .test-result.visible {
+      display: block;
+    }
+
+    .test-result.success {
+      border-left: 3px solid var(--success);
+    }
+
+    .test-result.error {
+      border-left: 3px solid var(--error);
+    }
+
+    .test-result h4 {
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+
+    .test-result p {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">📺</div>
+      <h1>AI 双语字幕</h1>
+      <span class="version">v2.1.1</span>
+    </header>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="general">常规设置</button>
+      <button class="tab" data-tab="translation">翻译服务</button>
+      <button class="tab" data-tab="cache">缓存管理</button>
+      <button class="tab" data-tab="privacy">隐私权限</button>
+    </div>
+
+    <!-- General Settings Tab -->
+    <div id="tab-general" class="tab-content active">
+      <div class="card">
+        <h3 class="card-title">
+          <span class="icon">🎨</span>
+          显示设置
+        </h3>
+
+        <div class="form-group">
+          <label for="default-mode">默认显示模式</label>
+          <select id="default-mode">
+            <option value="bilingual">中英双语</option>
+            <option value="chinese">仅中文</option>
+            <option value="english">仅英文</option>
+          </select>
+          <p class="input-hint">首次使用时的默认字幕显示模式</p>
+        </div>
+
+        <div class="form-group">
+          <div class="toggle-group">
+            <div>
+              <label style="margin-bottom: 4px;">自动开始翻译</label>
+              <p class="input-hint">检测到字幕后自动开始翻译</p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="auto-translate" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <div class="toggle-group">
+            <div>
+              <label style="margin-bottom: 4px;">显示控制面板</label>
+              <p class="input-hint">页面右下角显示浮动控制面板</p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="show-panel" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">
+          <span class="icon">⚙️</span>
+          高级设置
+        </h3>
+
+        <div class="settings-grid">
+          <div class="form-group">
+            <label for="batch-size">批处理大小</label>
+            <input type="number" id="batch-size" min="1" max="100" value="30">
+            <p class="input-hint">每批翻译的字幕数量</p>
+          </div>
+
+          <div class="form-group">
+            <label for="request-delay">请求间隔 (ms)</label>
+            <input type="number" id="request-delay" min="0" max="5000" value="200" step="50">
+            <p class="input-hint">批次间的等待时间</p>
+          </div>
+
+          <div class="form-group">
+            <label for="cache-expiry">缓存有效期 (天)</label>
+            <input type="number" id="cache-expiry" min="1" max="30" value="7">
+            <p class="input-hint">翻译缓存保留天数</p>
+          </div>
+
+          <div class="form-group">
+            <label for="max-retries">最大重试次数</label>
+            <input type="number" id="max-retries" min="0" max="5" value="3">
+            <p class="input-hint">翻译失败时的重试次数</p>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 20px;">
+          <div class="toggle-group">
+            <div>
+              <label style="margin-bottom: 4px;">调试日志</label>
+              <p class="input-hint">在浏览器控制台输出详细日志</p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="debug-mode">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="btn-group" style="margin-top: 24px;">
+          <button class="btn" id="save-general">保存设置</button>
+          <button class="btn btn-secondary" id="reset-general">恢复默认</button>
+        </div>
+        <div id="general-status" class="status hidden"></div>
+      </div>
+    </div>
+
+    <!-- Translation Tab -->
+    <div id="tab-translation" class="tab-content">
+      <div class="card">
+        <h3 class="card-title">
+          <span class="icon">🌐</span>
+          翻译服务
+        </h3>
+
+        <div class="form-group">
+          <label for="translation-service">选择翻译服务</label>
+          <select id="translation-service">
+            <option value="google">Google 翻译 (免费)</option>
+            <option value="openai">OpenAI 兼容接口</option>
+          </select>
+        </div>
+
+        <!-- Google Translate Info -->
+        <div id="google-config" class="service-config active">
+          <div class="info-section">
+            <h4>📋 关于 Google 翻译</h4>
+            <p>使用 Google 免费翻译 API，无需配置 API Key。</p>
+            <p>翻译质量中等，适合大多数日常使用场景。</p>
+            <p>由于是公共接口，可能会受到速率限制。</p>
+          </div>
+        </div>
+
+        <!-- OpenAI Config -->
+        <div id="openai-config" class="service-config">
+          <div class="form-group">
+            <label for="openai-baseurl">API Base URL</label>
+            <input type="text" id="openai-baseurl" placeholder="https://api.openai.com/v1">
+            <p class="input-hint">OpenAI 兼容 API 的基础地址</p>
+          </div>
+
+          <div class="form-group">
+            <label for="openai-apikey">API Key</label>
+            <input type="password" id="openai-apikey" placeholder="sk-...">
+            <p class="input-hint">您的 API 密钥将被安全存储在本地</p>
+          </div>
+
+          <div class="form-group">
+            <label for="openai-model">模型名称</label>
+            <input type="text" id="openai-model" placeholder="gpt-3.5-turbo">
+            <p class="input-hint">例如: gpt-3.5-turbo, gpt-4, deepseek-chat, claude-3-haiku</p>
+          </div>
+
+          <div class="form-group">
+            <label for="openai-prompt">自定义提示词</label>
+            <textarea id="openai-prompt" placeholder="你是一个专业的字幕翻译助手...">你是一个专业的字幕翻译助手。请将以下英文内容翻译成自然流畅的中文，保持专业术语准确，译文简洁易懂。</textarea>
+            <p class="input-hint">用于指导 AI 翻译的风格和方式</p>
+          </div>
+
+          <div class="info-section">
+            <h4>💡 支持的 API 服务商</h4>
+            <p>支持任何 OpenAI 兼容接口，包括：</p>
+            <p>• OpenAI API (api.openai.com)</p>
+            <p>• Azure OpenAI</p>
+            <p>• DeepSeek API</p>
+            <p>• 月之暗面 (Moonshot AI)</p>
+            <p>• 以及其他兼容 OpenAI SDK 的服务</p>
+          </div>
+        </div>
+
+        <div class="btn-group" style="margin-top: 20px;">
+          <button class="btn" id="save-translation">保存配置</button>
+          <button class="btn btn-outline" id="test-translation">测试连接</button>
+        </div>
+
+        <div id="translation-status" class="status hidden"></div>
+
+        <div id="test-result" class="test-result">
+          <h4>测试结果</h4>
+          <p id="test-result-content"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cache Tab -->
+    <div id="tab-cache" class="tab-content">
+      <div class="card">
+        <h3 class="card-title">
+          <span class="icon">💾</span>
+          缓存管理
+        </h3>
+
+        <div class="cache-stats">
+          <div class="stat-item">
+            <div class="stat-value" id="cached-videos">-</div>
+            <div class="stat-label">已缓存视频</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value" id="cached-items">-</div>
+            <div class="stat-label">字幕条目</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value" id="storage-used">-</div>
+            <div class="stat-label">存储使用</div>
+          </div>
+        </div>
+
+        <div class="info-section">
+          <h4>📖 缓存说明</h4>
+          <p>翻译结果会自动缓存到本地存储，避免重复翻译。</p>
+          <p>缓存有效期可在高级设置中配置（默认 7 天）。</p>
+          <p>当翻译配置（服务类型、模型等）变更时，建议清除缓存。</p>
+        </div>
+
+        <div class="btn-group">
+          <button class="btn btn-danger" id="clear-all-cache">清除所有缓存</button>
+          <button class="btn btn-secondary" id="refresh-stats">刷新统计</button>
+        </div>
+
+        <div id="cache-status" class="status hidden"></div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">
+          <span class="icon">📤</span>
+          导入/导出配置
+        </h3>
+
+        <p class="input-hint" style="margin-bottom: 16px;">导出所有设置和缓存，或从备份文件恢复。</p>
+
+        <div class="btn-group">
+          <button class="btn btn-outline" id="export-config">导出配置</button>
+          <button class="btn btn-outline" id="import-config">导入配置</button>
+          <input type="file" id="import-file" accept=".json" style="display: none;">
+        </div>
+
+        <div id="import-status" class="status hidden"></div>
+      </div>
+    </div>
+
+    <!-- Privacy Tab -->
+    <div id="tab-privacy" class="tab-content">
+      <div class="card">
+        <h3 class="card-title">
+          <span class="icon">🔒</span>
+          隐私政策
+        </h3>
+
+        <div class="info-section">
+          <h4>📊 数据收集说明</h4>
+          <p>本扩展<strong>不会</strong>收集任何个人身份信息或浏览历史。</p>
+          <p>字幕内容仅在本地处理，翻译时才会发送至您配置的翻译服务。</p>
+          <p>使用 Google 翻译时，字幕文本会通过加密连接发送至 Google 服务器。</p>
+          <p>使用 OpenAI 兼容接口时，字幕文本会发送至您配置的 API 端点。</p>
+        </div>
+
+        <div class="info-section">
+          <h4>🔐 数据存储</h4>
+          <p>所有配置和翻译缓存仅存储在您的浏览器本地。</p>
+          <p>API Key 使用 Chrome 安全的 storage API 加密存储。</p>
+          <p>您可以随时清除所有数据（见缓存管理标签页）。</p>
+        </div>
+
+        <div class="info-section">
+          <h4>🌐 网络请求</h4>
+          <p>扩展仅在以下情况发起网络请求：</p>
+          <p>1. 获取视频字幕文件（来自视频网站）</p>
+          <p>2. 调用翻译服务 API（您主动选择的服务）</p>
+          <p>3. 检查扩展更新（由 Chrome 浏览器管理）</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">
+          <span class="icon">🔑</span>
+          权限说明
+        </h3>
+
+        <ul class="permission-list">
+          <li>
+            <div class="permission-icon">📄</div>
+            <div class="permission-content">
+              <div class="permission-name">activeTab</div>
+              <div class="permission-desc">读取当前页面信息以检测视频和字幕元素</div>
+            </div>
+          </li>
+          <li>
+            <div class="permission-icon">💾</div>
+            <div class="permission-content">
+              <div class="permission-name">storage</div>
+              <div class="permission-desc">保存翻译缓存和用户配置到本地存储</div>
+            </div>
+          </li>
+          <li>
+            <div class="permission-icon">🧩</div>
+            <div class="permission-content">
+              <div class="permission-name">tabs</div>
+              <div class="permission-desc">在扩展弹窗和内容脚本之间通信</div>
+            </div>
+          </li>
+          <li>
+            <div class="permission-icon">🌐</div>
+            <div class="permission-content">
+              <div class="permission-name">host_permissions</div>
+              <div class="permission-desc">访问视频网站的字幕文件和翻译服务 API</div>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <footer>
+      <p>
+        AI 双语字幕扩展 v2.1.0 |
+        <a href="https://github.com" target="_blank">GitHub</a> |
+        <a href="https://github.com/issues" target="_blank">问题反馈</a>
+      </p>
+    </footer>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
