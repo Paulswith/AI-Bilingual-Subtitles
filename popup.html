@@ -226,6 +226,25 @@
       color: #888;
       margin-top: 4px;
     }
+
+    /* API Key 状态指示器样式 (US3 - T016) */
+    .api-key-status {
+      margin-top: 8px;
+      padding: 6px 10px;
+      background: rgba(74, 222, 128, 0.1);
+      border-radius: 4px;
+      font-size: 12px;
+      display: inline-block;
+    }
+
+    .api-key-status .status-indicator {
+      color: #4ade80;
+      font-weight: 500;
+    }
+
+    .api-key-status .status-indicator.unconfigured {
+      color: #666;
+    }
   </style>
 </head>
 <body>
@@ -280,6 +299,10 @@
     <div class="service-desc" id="service-desc">
       使用 Google 免费翻译接口，无需配置
     </div>
+    <!-- API Key 状态指示器 (US3 - T015) -->
+    <div class="api-key-status" id="api-key-status" style="display: none;">
+      <span class="status-indicator configured">✓ API Key 已配置</span>
+    </div>
 
     <div id="openai-config" class="api-config-section hidden">
       <label>API Base URL</label>
@@ -312,7 +335,7 @@
   <div id="status" class="status hidden"></div>
 
   <footer>
-    <span>v2.1.1</span>
+    <span>v2.2.0</span>
     <div style="display: flex; gap: 8px; align-items: center;">
       <a href="options.html" target="_blank" style="color: #4ade80; text-decoration: none; font-size: 12px;">⚙️ 高级设置</a>
       <a href="https://github.com" target="_blank" style="color: #4ade80; text-decoration: none;">GitHub</a>

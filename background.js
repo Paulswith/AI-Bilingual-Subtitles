@@ -465,6 +465,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'loadConfig':
       loadConfig().then(() => sendResponse({ success: true, config }));
       return true;
+
+    // 新增缓存相关消息处理
+    case 'checkCache':
+      checkCache(message.videoId, message.subtitleHash)
+        .then(result => sendResponse(result));
+      return true;
+
+    case 'saveCache':
+      saveCache(message.videoId, message.subtitleHash, message.translatedSubs)
+        .then(() => sendResponse({ success: true }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'clearCache':
+      clearCache(message.videoId)
+        .then(() => sendResponse({ success: true }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'calculateHash':
+      const hash = calculateHash(message.content);
+      sendResponse({ hash });
+      break;
   }
 });
 
@@ -480,3 +503,92 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 
 console.log('[BilingualSubs] Background script loaded');
+
+// ============== 工具函数 ==============
+
+/**
+ * 计算字幕内容哈希 (FNV-1a 算法)
+ * @param {string} content - 字幕内容
+ * @returns {string} 16 字符哈希值
+ */
+function calculateHash(content) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < content.length; i++) {
+    hash ^= content.charCodeAt(i);
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * 检查缓存
+ * @param {string} videoId - 视频 ID
+ * @param {string} subtitleHash - 字幕内容哈希
+ * @returns {Promise<{hit: boolean, data?: object}>}
+ */
+async function checkCache(videoId, subtitleHash) {
+  try {
+    const cacheKey = `subtitle_${videoId}`;
+    const result = await chrome.storage.local.get([cacheKey, `${cacheKey}_hash`]);
+
+    if (result[cacheKey] && result[`${cacheKey}_hash`] === subtitleHash) {
+      const cacheData = result[cacheKey];
+      // 检查缓存是否过期 (30 天)
+      const now = Date.now();
+      const expiresAt = cacheData.expiresAt || (cacheData.timestamp + 30 * 24 * 60 * 60 * 1000);
+
+      if (now < expiresAt) {
+        console.log('[BilingualSubs] Cache hit:', videoId);
+        return { hit: true, data: cacheData };
+      } else {
+        console.log('[BilingualSubs] Cache expired:', videoId);
+        await clearCache(videoId);
+      }
+    }
+    return { hit: false };
+  } catch (error) {
+    console.error('[BilingualSubs] checkCache error:', error);
+    return { hit: false };
+  }
+}
+
+/**
+ * 保存缓存
+ * @param {string} videoId - 视频 ID
+ * @param {string} subtitleHash - 字幕内容哈希
+ * @param {Array} translatedSubs - 翻译后的字幕
+ */
+async function saveCache(videoId, subtitleHash, translatedSubs) {
+  try {
+    const cacheKey = `subtitle_${videoId}`;
+    const cacheData = {
+      translatedSubs: translatedSubs,
+      timestamp: Date.now(),
+      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 天后过期
+      accessCount: 1
+    };
+
+    await chrome.storage.local.set({
+      [cacheKey]: cacheData,
+      [`${cacheKey}_hash`]: subtitleHash
+    });
+
+    console.log('[BilingualSubs] Cache saved:', videoId);
+  } catch (error) {
+    console.error('[BilingualSubs] saveCache error:', error);
+  }
+}
+
+/**
+ * 清除指定视频的缓存
+ * @param {string} videoId - 视频 ID
+ */
+async function clearCache(videoId) {
+  try {
+    const cacheKey = `subtitle_${videoId}`;
+    await chrome.storage.local.remove([cacheKey, `${cacheKey}_hash`]);
+    console.log('[BilingualSubs] Cache cleared:', videoId);
+  } catch (error) {
+    console.error('[BilingualSubs] clearCache error:', error);
+  }
+}

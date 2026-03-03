@@ -6,7 +6,10 @@
       "mcp__browser__browser_tab_list",
       "mcp__browser__browser_get_markdown",
       "mcp__browser__browser_evaluate",
-      "Bash(chmod +x:*)"
+      "Bash(chmod +x:*)",
+      "Bash(git fetch:*)",
+      "Bash(.specify/scripts/bash/create-new-feature.sh:*)",
+      "Bash(.specify/*)"
     ]
   }
 }

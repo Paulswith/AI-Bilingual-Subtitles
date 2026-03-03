@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Bilingual Subtitles - 双语字幕翻译",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "为在线视频添加 AI 驱动的中英双语字幕，支持 Google 翻译和 OpenAI 兼容接口，预翻译无延迟",
   "permissions": [
     "activeTab",

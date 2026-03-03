@@ -24,7 +24,9 @@ const elements = {
   translateBtn: document.getElementById('translate-btn'),
   clearCacheBtn: document.getElementById('clear-cache-btn'),
   exportBtn: document.getElementById('export-btn'),
-  status: document.getElementById('status')
+  status: document.getElementById('status'),
+  // API Key 状态指示器 (US3 - T015)
+  apiKeyStatus: document.getElementById('api-key-status')
 };
 
 // ============== 工具函数 ==============
@@ -62,6 +64,12 @@ async function init() {
 
   // 直接从 storage 加载配置
   await loadConfig();
+
+  // 更新 API Key 状态 (US3 - T019)
+  await updateApiKeyStatus();
+
+  // 监听配置变更 (US3 - T018)
+  setupApiKeyStatusListener();
 
   // 获取字幕状态
   await updateStatus();
@@ -103,6 +111,38 @@ function updateServiceUI(service) {
     elements.openaiConfig.classList.add('hidden');
     elements.serviceDesc.textContent = '使用 Google 免费翻译接口，无需配置';
   }
+}
+
+/**
+ * 更新 API Key 状态显示 (US3 - T017)
+ */
+async function updateApiKeyStatus() {
+  try {
+    const result = await chrome.storage.sync.get(['config']);
+    const hasApiKey = !!result?.config?.openai?.apiKey;
+
+    if (elements.apiKeyStatus) {
+      if (hasApiKey) {
+        elements.apiKeyStatus.style.display = 'inline-block';
+        elements.apiKeyStatus.innerHTML = '<span class="status-indicator configured">✓ API Key 已配置</span>';
+      } else {
+        elements.apiKeyStatus.style.display = 'none';
+      }
+    }
+  } catch (error) {
+    console.error('Failed to get API key status:', error);
+  }
+}
+
+/**
+ * 监听配置变更 (US3 - T018)
+ */
+function setupApiKeyStatusListener() {
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.config) {
+      updateApiKeyStatus();
+    }
+  });
 }
 
 /**
@@ -221,6 +261,9 @@ function bindEvents() {
     try {
       await chrome.runtime.sendMessage({ action: 'loadConfig' });
     } catch (e) {}
+
+    // 更新 API Key 状态显示
+    updateApiKeyStatus();
 
     showStatus('✅ 配置已保存', 'success', 3000);
   });

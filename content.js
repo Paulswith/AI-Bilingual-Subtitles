@@ -48,6 +48,102 @@ function debugLog(...args) {
   }
 }
 
+// ============== 语言检测工具 (T003) ==============
+
+/**
+ * 检测字幕语言
+ * @param {Array} cues - 字幕片段数组
+ * @returns {string} 语言代码 'zh' | 'en' | 'ja' | 'ko' | 'unknown'
+ */
+function detectSubtitleLanguage(cues) {
+  // 采样前 10 条字幕内容进行检测
+  const sampleText = cues.slice(0, 10).map(c => c.text || '').join(' ');
+
+  // 中文字符检测
+  if (/[\u4e00-\u9fa5]/.test(sampleText)) {
+    return 'zh';
+  }
+
+  // 日文字符检测 (平假名 + 片假名)
+  if (/[\u3040-\u309f\u30a0-\u30ff]/.test(sampleText)) {
+    return 'ja';
+  }
+
+  // 韩文字符检测
+  if (/[\uac00-\ud7af]/.test(sampleText)) {
+    return 'ko';
+  }
+
+  // 英文/拉丁字母检测
+  if (/[a-zA-Z]/.test(sampleText)) {
+    return 'en';
+  }
+
+  return 'unknown';
+}
+
+/**
+ * 检测是否包含中文
+ * @param {string} text - 文本内容
+ * @returns {boolean}
+ */
+function containsChinese(text) {
+  return /[\u4e00-\u9fa5]/.test(text);
+}
+
+// ============== UI 提示组件 (T004) ==============
+
+/**
+ * 显示缓存加载提示
+ * @param {string} message - 提示消息
+ * @param {number} duration - 显示时长 (毫秒)
+ */
+function showCacheHint(message = '已从缓存加载', duration = 3000) {
+  // 移除已存在的提示
+  let hintEl = document.querySelector('.cache-hint');
+  if (hintEl) {
+    hintEl.remove();
+  }
+
+  // 创建提示元素
+  hintEl = document.createElement('div');
+  hintEl.className = 'cache-hint';
+  hintEl.textContent = message;
+
+  // 添加到字幕容器
+  const container = document.getElementById('bilingual-subs-container');
+  if (container) {
+    container.appendChild(hintEl);
+
+    // 显示动画
+    requestAnimationFrame(() => {
+      hintEl.classList.add('visible');
+    });
+
+    // 定时隐藏
+    setTimeout(() => {
+      hideCacheHint(hintEl);
+    }, duration);
+  }
+}
+
+/**
+ * 隐藏缓存提示
+ * @param {HTMLElement} hintEl - 提示元素
+ */
+function hideCacheHint(hintEl = null) {
+  if (!hintEl) {
+    hintEl = document.querySelector('.cache-hint');
+  }
+  if (hintEl) {
+    hintEl.classList.add('hide');
+    hintEl.classList.remove('visible');
+    setTimeout(() => {
+      hintEl.remove();
+    }, 300);
+  }
+}
+
 // ============== 字幕数据管理 ==============
 class SubtitleManager {
   constructor() {
@@ -173,19 +269,6 @@ class SubtitleManager {
   }
 
   /**
-   * 计算字幕内容哈希
-   */
-  async computeContentHash(content) {
-    // 使用简单的字符串哈希算法 (FNV-1a)
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < content.length; i++) {
-      hash ^= content.charCodeAt(i);
-      hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
-    }
-    return (hash >>> 0).toString(16).padStart(8, '0');
-  }
-
-  /**
    * 获取带哈希的缓存键
    */
   async getCacheKey() {
@@ -197,9 +280,13 @@ class SubtitleManager {
     try {
       const response = await fetch(subtitleUrl);
       const content = await response.text();
-      const hash = await this.computeContentHash(content);
-      this.currentContentHash = hash;
-      return `${baseKey}_${hash}`;
+      // 使用 background.js 中的 calculateHash
+      const hashResult = await chrome.runtime.sendMessage({
+        action: 'calculateHash',
+        content: content
+      });
+      this.currentContentHash = hashResult.hash;
+      return `${baseKey}_${hashResult.hash}`;
     } catch (error) {
       debugLog('Failed to compute content hash:', error);
       return baseKey;
@@ -207,35 +294,57 @@ class SubtitleManager {
   }
 
   /**
-   * 从缓存加载翻译
+   * 从缓存加载翻译 (US1 - T006)
    */
   async loadFromCache() {
     try {
-      const cacheKey = this.generateVideoId();
-      const result = await chrome.storage.local.get([cacheKey, `${cacheKey}_config`]);
+      // 获取字幕 URL 用于计算哈希
+      const subtitleUrl = await this.getSubtitleUrl().catch(() => null);
+      if (!subtitleUrl) {
+        return false;
+      }
 
-      if (result[cacheKey]) {
-        const cacheData = result[cacheKey];
-        const cacheConfig = result[`${cacheKey}_config`];
+      // 获取字幕内容并计算哈希
+      const response = await fetch(subtitleUrl);
+      const content = await response.text();
 
-        // 检查缓存是否过期
-        const now = Date.now();
-        if (cacheData.timestamp && (now - cacheData.timestamp) > CONFIG.cacheExpiry) {
-          console.log('[BilingualSubs] Cache expired');
-          return false;
+      // 计算哈希
+      const hashResult = await chrome.runtime.sendMessage({
+        action: 'calculateHash',
+        content: content
+      });
+      const subtitleHash = hashResult.hash;
+
+      // 检查缓存
+      const videoId = this.generateVideoId();
+      const cacheResult = await chrome.runtime.sendMessage({
+        action: 'checkCache',
+        videoId: videoId,
+        subtitleHash: subtitleHash
+      });
+
+      if (cacheResult.hit && cacheResult.data?.translatedSubs) {
+        // 缓存命中，加载翻译
+        const cacheData = cacheResult.data;
+
+        // 重新获取原始字幕并填充翻译
+        this.originalSubtitles = this.parseVTT(content);
+        for (let i = 0; i < this.originalSubtitles.length && i < cacheData.translatedSubs.length; i++) {
+          this.originalSubtitles[i].translation = cacheData.translatedSubs[i]?.translatedText || cacheData.translatedSubs[i]?.translation || '';
         }
 
-        // 检查配置是否匹配 (翻译服务、模型等)
-        const currentConfig = await this.getCurrentTranslationConfig();
-        if (cacheConfig && JSON.stringify(cacheConfig) !== JSON.stringify(currentConfig)) {
-          console.log('[BilingualSubs] Cache config mismatch, re-translating recommended');
-        }
-
-        this.originalSubtitles = cacheData.subtitles || [];
         this.hasCache = true;
         console.log('[BilingualSubs] Loaded from cache:', this.originalSubtitles.length, 'items');
+
+        // 显示缓存提示 (US1)
+        showCacheHint('已从缓存加载', 3000);
+
         return true;
       }
+
+      // 缓存未命中，保存当前字幕内容以便后续保存
+      this.currentSubtitleHash = subtitleHash;
+      console.log('[BilingualSubs] Cache miss, will translate');
     } catch (error) {
       console.error('[BilingualSubs] Cache load error:', error);
     }
@@ -243,23 +352,31 @@ class SubtitleManager {
   }
 
   /**
-   * 保存翻译到缓存
+   * 保存翻译到缓存 (US1 - T008)
    */
   async saveToCache() {
     try {
-      const cacheKey = this.generateVideoId();
-      const cacheData = {
-        subtitles: this.originalSubtitles,
-        timestamp: Date.now(),
-        count: this.originalSubtitles.length
-      };
-      const configData = await this.getCurrentTranslationConfig();
+      const videoId = this.generateVideoId();
+      const subtitleHash = this.currentSubtitleHash;
 
-      await chrome.storage.local.set({
-        [cacheKey]: cacheData,
-        [`${cacheKey}_config`]: configData
+      // 准备翻译后的字幕数据
+      const translatedSubs = this.originalSubtitles.map(sub => ({
+        id: sub.id,
+        startTime: sub.startTime,
+        endTime: sub.endTime,
+        text: sub.text,
+        translation: sub.translation || sub.translatedText || ''
+      }));
+
+      // 保存到缓存
+      await chrome.runtime.sendMessage({
+        action: 'saveCache',
+        videoId: videoId,
+        subtitleHash: subtitleHash,
+        translatedSubs: translatedSubs
       });
-      console.log('[BilingualSubs] Saved to cache:', cacheKey);
+
+      console.log('[BilingualSubs] Saved to cache:', videoId);
     } catch (error) {
       console.error('[BilingualSubs] Cache save error:', error);
     }
@@ -878,12 +995,47 @@ async function initializeAfterVideoReady(video, track = null) {
 
   // 获取字幕
   try {
-    // 先尝试加载缓存
+    // 先尝试加载缓存 (US1)
     const hasCache = await subtitleManager.loadFromCache();
 
-    if (!hasCache) {
+    if (hasCache) {
+      // 有缓存，直接加载
+      const translatedCount = subtitleManager.originalSubtitles.filter(s => s.translation).length;
+
+      const statusEl = document.getElementById('bilingual-subs-status');
+      if (statusEl) {
+        statusEl.textContent = `✅ 已加载缓存 (${translatedCount}/${subtitleManager.originalSubtitles.length})`;
+        setTimeout(() => {
+          statusEl.textContent = '';
+        }, 5000);
+      }
+
+      // 更新面板状态
+      controlPanel.updateStatus(
+        subtitleManager.originalSubtitles.length,
+        translatedCount,
+        hasCache
+      );
+    } else {
       // 没有缓存，获取新字幕
       await subtitleManager.fetchSubtitles();
+
+      // 语言检测 (US4 - T020, T021)
+      // 注意：我们需要翻译的是英文字幕 → 中文
+      // 所以应该检测是否为英文，非英文才不翻译
+      const detectedLanguage = detectSubtitleLanguage(subtitleManager.originalSubtitles);
+      console.log('[BilingualSubs] Detected language:', detectedLanguage);
+
+      if (detectedLanguage !== 'en') {
+        // 非英文字幕，不触发翻译（仅支持英文源字幕）
+        const statusEl = document.getElementById('bilingual-subs-status');
+        if (statusEl) {
+          statusEl.textContent = '⚠️ 暂不支持此语言（仅支持英文源字幕翻译为中文）';
+        }
+        // 显示不支持的提示
+        subtitleDisplay.showMessage('仅支持英文翻译为中文', 5000);
+        return;
+      }
 
       // 自动开始翻译（延迟执行，避免阻塞页面）
       if (autoTranslateEnabled) {
@@ -908,25 +1060,6 @@ async function initializeAfterVideoReady(video, track = null) {
           }
         }, CONFIG.autoTranslateDelay);
       }
-    } else {
-      // 有缓存，直接加载
-      await subtitleManager.fetchSubtitles();
-      const translatedCount = subtitleManager.originalSubtitles.filter(s => s.translation).length;
-
-      const statusEl = document.getElementById('bilingual-subs-status');
-      if (statusEl) {
-        statusEl.textContent = `✅ 已加载缓存 (${translatedCount}/${subtitleManager.originalSubtitles.length})`;
-        setTimeout(() => {
-          statusEl.textContent = '';
-        }, 5000);
-      }
-
-      // 更新面板状态
-      controlPanel.updateStatus(
-        subtitleManager.originalSubtitles.length,
-        translatedCount,
-        hasCache
-      );
     }
   } catch (error) {
     console.error('[BilingualSubs] Error fetching subtitles:', error);
