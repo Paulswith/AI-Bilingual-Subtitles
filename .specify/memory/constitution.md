@@ -1,19 +1,15 @@
 <!--
 ## Sync Impact Report
 
-- **Version change**: N/A → 1.0.0 (Initial ratification)
-- **Modified principles**: N/A (new document)
-- **Added sections**:
-  - Core Principles (6 principles)
-  - User Experience Standards
-  - Data & Privacy
-  - Governance
+- **Version change**: 1.2.0 → 1.2.1 (宪法更新流程迁移至 .specify)
+- **Modified principles**: N/A
+- **Added sections**: N/A
 - **Removed sections**: N/A
 - **Templates requiring updates**:
-  - `.specify/templates/plan-template.md`: ✅ No changes needed (Constitution Check section compatible)
-  - `.specify/templates/spec-template.md`: ✅ No changes needed (user scenarios align with UX principles)
-  - `.specify/templates/tasks-template.md`: ✅ No changes needed (phase structure compatible)
-  - `.specify/templates/commands/*.md`: ✅ No changes needed
+  - `.specify/templates/plan-template.md`: ✅ No changes needed
+  - `.specify/templates/spec-template.md`: ✅ No changes needed
+  - `.specify/templates/tasks-template.md`: ✅ No changes needed
+  - `.specify/templates/commands/constitution.md`: ✅ Added (migrated from .claude/commands/speckit.constitution.md)
 - **Follow-up TODOs**: None
 -->
 
@@ -89,6 +85,35 @@
 - 所有功能不设付费墙
 - 高级设置不影响基础体验
 
+**Rationale**: 用户应根据需求选择功能，不应被强制升级或付费。
+
+### VII. 版本管理 (Version Management)
+
+每次 bug 修复、需求更新或功能发布必须规范更新版本号，便于区分版本能力。
+
+**非协商规则**：
+- 遵循语义化版本规范：MAJOR.MINOR.PATCH（如 2.1.0）
+- MAJOR 版本：不兼容的 API 修改、重大功能重构
+- MINOR 版本：新功能添加、向后兼容的功能增强
+- PATCH 版本：向后兼容的问题修复、小幅改进
+- 每次发布必须在 manifest.json 和 popup.html 同步更新版本号
+- 版本更新必须记录变更内容（CHANGELOG 或 commit message）
+
+**Rationale**: 规范的版本管理有助于用户理解更新内容，便于问题追踪和回滚。
+
+### VIII. 文档中文 (Documentation in Chinese)
+
+所有项目文档、代码注释、用户界面文本必须使用简体中文，确保中文用户无障碍理解。
+
+**非协商规则**：
+- 设计规范、实现计划、任务列表必须使用中文编写
+- 代码注释、日志消息、错误信息必须使用中文
+- 用户界面（popup、选项页、通知）必须使用中文
+- 变量名、函数名可使用英文（遵循编程惯例），但文档说明须为中文
+- 仅当引用外部技术术语时可使用英文原文（如 API、OAuth2）
+
+**Rationale**: 项目目标用户为中文使用者，文档和界面的中文一致性降低理解成本，提升使用体验。
+
 ## User Experience Standards
 
 **界面一致性**：
@@ -121,11 +146,20 @@
 2. 说明修订原因和影响范围
 3. 更新 constitution.md 并递增版本号
 4. 更新相关模板（如受影响）
+5. 详细执行步骤与一致性检查见：`.specify/templates/commands/constitution.md`
 
 **版本策略**：
+- 宪法版本：MAJOR.MINOR.PATCH（如 1.1.0）
 - MAJOR：原则删除或重大重新定义
 - MINOR：新增原则或实质性扩展
 - PATCH：措辞优化、非语义调整
+
+**产品版本管理**（遵循语义化版本规范）：
+- MAJOR 版本：不兼容的功能变更、重大重构
+- MINOR 版本：新功能添加、向后兼容的功能增强
+- PATCH 版本：向后兼容的问题修复、小幅改进
+- 每次变更必须更新 manifest.json 中的 version 字段
+- 每次变更必须同步更新 popup.html 中显示的开发版本号
 
 **合规审查**：
 - 每个 PR 必须通过原则符合性检查
@@ -134,4 +168,4 @@
 
 ---
 
-**Version**: 1.0.0 | **Ratified**: 2026-03-03 | **Last Amended**: 2026-03-03
+**Version**: 1.2.1 | **Ratified**: 2026-03-03 | **Last Amended**: 2026-03-03

@@ -19,18 +19,71 @@ let CONFIG = {
   // 缓存有效期 (毫秒)
   cacheExpiry: 7 * 24 * 60 * 60 * 1000, // 7 天
   // 高级设置
-  batchSize: 30,
   requestDelay: 200,
   maxRetries: 3,
   debugMode: false
 };
+
+const REJECTION_MESSAGES = {
+  NO_ENGLISH_SUBTITLE: {
+    code: 'NO_ENGLISH_SUBTITLE',
+    message: '拒绝生成：未检测到可用英文字幕',
+    actionHint: '请切换到英文字幕后重试'
+  },
+  NO_SUBTITLE_TRACK: {
+    code: 'NO_SUBTITLE_TRACK',
+    message: '拒绝生成：当前页面没有可用字幕轨道',
+    actionHint: '请开启字幕后重试'
+  }
+};
+
+let eligibilityState = {
+  status: 'pending',
+  reason: '等待检测字幕轨道',
+  detectedLanguage: 'unknown',
+  sourceTrackId: null,
+  evaluatedAt: Date.now()
+};
+
+const translationSession = {
+  totalCount: 0,
+  doneCount: 0,
+  translatedCount: 0,
+  skippedCount: 0,
+  failedCount: 0,
+  fallbackService: null,
+  isRunning: false,
+  isAborted: false,
+  startedAt: 0,
+  completedAt: 0
+};
+
+function isSkippableSubtitleText(text) {
+  const normalized = typeof text === 'string' ? text.trim() : '';
+  if (!normalized) return true;
+  return !/[a-zA-Z0-9\u4e00-\u9fa5]/.test(normalized);
+}
+
+function getSessionSnapshot() {
+  return {
+    totalCount: translationSession.totalCount,
+    doneCount: translationSession.doneCount,
+    translatedCount: translationSession.translatedCount,
+    skippedCount: translationSession.skippedCount,
+    failedCount: translationSession.failedCount,
+    fallbackService: translationSession.fallbackService,
+    isRunning: translationSession.isRunning,
+    isAborted: translationSession.isAborted,
+    startedAt: translationSession.startedAt,
+    completedAt: translationSession.completedAt
+  };
+}
 
 // 加载扩展配置
 async function loadExtensionConfig() {
   try {
     const result = await chrome.storage.sync.get(['advancedConfig']);
     if (result.advancedConfig) {
-      CONFIG.batchSize = result.advancedConfig.batchSize || 30;
       CONFIG.requestDelay = result.advancedConfig.requestDelay || 200;
       CONFIG.maxRetries = result.advancedConfig.maxRetries || 3;
       CONFIG.debugMode = result.advancedConfig.debugMode || false;
@@ -55,9 +108,23 @@ function debugLog(...args) {
  * @param {Array} cues - 字幕片段数组
  * @returns {string} 语言代码 'zh' | 'en' | 'ja' | 'ko' | 'unknown'
  */
-function detectSubtitleLanguage(cues) {
+function normalizeLanguageCode(lang) {
+  if (!lang || typeof lang !== 'string') return '';
+  return lang.trim().toLowerCase().split('-')[0];
+}
+
+function detectSubtitleLanguage(cues, explicitLanguage = '') {
+  const normalizedExplicit = normalizeLanguageCode(explicitLanguage);
+  if (normalizedExplicit) {
+    if (normalizedExplicit === 'en') return 'en';
+    if (normalizedExplicit === 'zh') return 'zh';
+    if (normalizedExplicit === 'ja') return 'ja';
+    if (normalizedExplicit === 'ko') return 'ko';
+  }
+
+  const cueList = Array.isArray(cues) ? cues : [];
   // 采样前 10 条字幕内容进行检测
-  const sampleText = cues.slice(0, 10).map(c => c.text || '').join(' ');
+  const sampleText = cueList.slice(0, 10).map(c => c.text || '').join(' ');
 
   // 中文字符检测
   if (/[\u4e00-\u9fa5]/.test(sampleText)) {
@@ -80,6 +147,193 @@ function detectSubtitleLanguage(cues) {
   }
 
   return 'unknown';
+}
+
+function scanAvailableTracks(video = null) {
+  const targetVideo = video || document.querySelector('video');
+  if (!targetVideo) return [];
+
+  const tracks = Array.from(targetVideo.querySelectorAll('track'));
+  return tracks.map((trackEl, index) => {
+    const trackObj = trackEl.track;
+    const trackId = trackEl.dataset.bilingualTrackId || `${Date.now()}_${index}`;
+    trackEl.dataset.bilingualTrackId = trackId;
+    const languageCode = normalizeLanguageCode(trackEl.srclang || trackEl.getAttribute('srclang') || '');
+    const label = trackEl.label || trackEl.getAttribute('label') || '';
+    const readyState = trackObj?.readyState ?? 0;
+    const isReadable = Boolean(trackEl.src) && readyState !== 3;
+
+    return {
+      trackId,
+      label,
+      languageCode,
+      kind: trackEl.kind || trackEl.getAttribute('kind') || '',
+      isActive: trackObj?.mode === 'showing',
+      isReadable,
+      readyState,
+      sampleText: '',
+      src: trackEl.src || '',
+      trackEl
+    };
+  });
+}
+
+function rankTrackPriority(track) {
+  let score = 0;
+  if (track.languageCode === 'en') score += 100;
+  if (/english|英文|en/i.test(track.label || '')) score += 80;
+  if (track.isActive) score += 40;
+  if (track.kind === 'subtitles') score += 20;
+  if (track.isReadable) score += 10;
+  return score;
+}
+
+async function resolveSubtitleUrlFromTrack(track) {
+  if (!track?.src) {
+    throw new Error('字幕轨道缺少 src');
+  }
+
+  let subtitleUrl = track.src;
+  if (subtitleUrl.endsWith('.m3u8')) {
+    const response = await fetch(subtitleUrl);
+    const content = await response.text();
+    const lines = content.split('\n');
+    const vttFile = lines.find((line) => line.endsWith('.vtt'));
+    if (vttFile) {
+      subtitleUrl = subtitleUrl.replace(/[^/]+\.m3u8$/, vttFile);
+    }
+  }
+
+  return subtitleUrl;
+}
+
+async function calculateSubtitleHash(content) {
+  const hashResult = await chrome.runtime.sendMessage({
+    action: 'calculateHash',
+    content
+  });
+  return hashResult?.hash || '';
+}
+
+function buildEligibility(status, reason, detectedLanguage = 'unknown', sourceTrackId = null) {
+  return {
+    status,
+    reason,
+    detectedLanguage,
+    sourceTrackId,
+    evaluatedAt: Date.now()
+  };
+}
+
+function getRejectionNoticeByStatus(status) {
+  if (status === 'rejected_no_track') return REJECTION_MESSAGES.NO_SUBTITLE_TRACK;
+  return REJECTION_MESSAGES.NO_ENGLISH_SUBTITLE;
+}
+
+async function syncEligibilityState(nextState, trigger = 'page_updated') {
+  const previous = eligibilityState;
+  const { subtitleSource, ...state } = nextState || {};
+  eligibilityState = { ...state, evaluatedAt: Date.now() };
+
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'subtitleEligibility',
+      payload: eligibilityState
+    });
+
+    if (trigger === 'user_retry' || trigger === 'track_changed' || trigger === 'page_updated') {
+      await chrome.runtime.sendMessage({
+        action: 'retryEligibilityCheck',
+        payload: {
+          trigger,
+          requestedAt: Date.now()
+        }
+      });
+    }
+  } catch {
+    // 忽略消息发送失败，避免打断主流程
+  }
+
+  if (previous.status !== eligibilityState.status) {
+    console.log(`[BilingualSubs] 翻译资格状态变化: ${previous.status} -> ${eligibilityState.status}`);
+  }
+
+  return subtitleSource
+    ? { ...eligibilityState, subtitleSource }
+    : eligibilityState;
+}
+
+async function evaluateSubtitleEligibility(video = null, subtitles = [], trigger = 'page_updated') {
+  const tracks = scanAvailableTracks(video);
+  if (!tracks.length) {
+    return syncEligibilityState(
+      buildEligibility('rejected_no_track', REJECTION_MESSAGES.NO_SUBTITLE_TRACK.message, 'unknown', null),
+      trigger
+    );
+  }
+
+  const readableTracks = tracks.filter((t) => t.isReadable);
+  if (!readableTracks.length) {
+    return syncEligibilityState(
+      buildEligibility('pending', '字幕轨道存在但暂不可读，等待加载', 'unknown', null),
+      trigger
+    );
+  }
+
+  const sortedTracks = [...readableTracks].sort((a, b) => rankTrackPriority(b) - rankTrackPriority(a));
+  let lastDetectedLanguage = detectSubtitleLanguage(subtitles || []);
+  let hadReadableButUnavailableContent = false;
+
+  for (const track of sortedTracks) {
+    try {
+      const subtitleUrl = await resolveSubtitleUrlFromTrack(track);
+      const response = await fetch(subtitleUrl);
+      const content = await response.text();
+      const parsedSubtitles = subtitleManager.parseVTT(content);
+
+      if (!parsedSubtitles.length) {
+        hadReadableButUnavailableContent = true;
+        continue;
+      }
+
+      const detectedLanguage = detectSubtitleLanguage(parsedSubtitles, track.languageCode || '');
+      lastDetectedLanguage = detectedLanguage || lastDetectedLanguage;
+      if (detectedLanguage !== 'en') {
+        continue;
+      }
+
+      const subtitleHash = await calculateSubtitleHash(content);
+      return syncEligibilityState(
+        {
+          ...buildEligibility('eligible', '已识别英文字幕', 'en', track.trackId),
+          subtitleSource: {
+            trackId: track.trackId,
+            url: subtitleUrl,
+            content,
+            subtitles: parsedSubtitles,
+            hash: subtitleHash,
+            detectedLanguage
+          }
+        },
+        trigger
+      );
+    } catch (error) {
+      hadReadableButUnavailableContent = true;
+      debugLog('读取字幕轨道失败:', track.trackId, error);
+    }
+  }
+
+  if (hadReadableButUnavailableContent && lastDetectedLanguage === 'unknown') {
+    return syncEligibilityState(
+      buildEligibility('pending', '字幕轨道存在但暂不可读，等待加载', 'unknown', null),
+      trigger
+    );
+  }
+
+  return syncEligibilityState(
+    buildEligibility('rejected_no_english', REJECTION_MESSAGES.NO_ENGLISH_SUBTITLE.message, lastDetectedLanguage, null),
+    trigger
+  );
 }
 
 /**
@@ -154,6 +408,36 @@ class SubtitleManager {
     this.translationProgress = 0;
     this.isTranslating = false;
     this.hasCache = false;
+    this.currentCacheKey = null;
+    this.currentSubtitleHash = null;
+    this.selectedTrackId = null;
+    this.shouldStopTranslation = false;
+  }
+
+  setSourceTrack(trackId) {
+    this.selectedTrackId = trackId || null;
+  }
+
+  abortTranslation(reason = '页面切换或用户中断') {
+    this.shouldStopTranslation = true;
+    this.isTranslating = false;
+    translationSession.isAborted = true;
+    translationSession.isRunning = false;
+    console.log(`[BilingualSubs] 翻译已中断：${reason}`);
+  }
+
+  resetForNewSource() {
+    this.originalSubtitles = [];
+    this.hasCache = false;
+    this.currentCacheKey = null;
+    this.currentSubtitleHash = null;
+    this.translationProgress = 0;
+    translationSession.totalCount = 0;
+    translationSession.doneCount = 0;
+    translationSession.translatedCount = 0;
+    translationSession.skippedCount = 0;
+    translationSession.failedCount = 0;
+    translationSession.fallbackService = null;
   }
 
   /**
@@ -181,7 +465,8 @@ class SubtitleManager {
           startTime: this.parseTime(times[0].trim()),
           endTime: this.parseTime(times[1].trim().split(' ')[0]), // 移除可能的额外参数
           text: '',
-          translation: ''
+          translation: '',
+          status: 'pending'
         };
       } else if (currentSub && line !== '' && !line.match(/^\d+$/)) {
         // 字幕文本 (可能多行)，跳过纯数字行 (字幕序号)
@@ -211,139 +496,86 @@ class SubtitleManager {
     return hours * 3600 + minutes * 60 + seconds + milliseconds / 1000;
   }
 
-  /**
-   * 从视频元素获取字幕 URL
-   */
-  async getSubtitleUrl() {
-    const video = document.querySelector('video');
-    if (!video) {
-      throw new Error('未找到视频元素');
+  applySubtitleSource(source, force = false) {
+    if (!source?.hash || !Array.isArray(source.subtitles)) {
+      return false;
     }
 
-    const track = video.querySelector('track');
-    if (!track) {
-      throw new Error('未找到字幕轨道');
+    const isSameSource = !force
+      && this.currentSubtitleHash === source.hash
+      && this.selectedTrackId === source.trackId
+      && this.originalSubtitles.length > 0;
+
+    if (isSameSource) {
+      return false;
     }
 
-    let subtitleUrl = track.src;
-
-    // 如果是 m3u8，需要获取实际的 VTT 文件
-    if (subtitleUrl.endsWith('.m3u8')) {
-      const response = await fetch(subtitleUrl);
-      const content = await response.text();
-      const lines = content.split('\n');
-      const vttFile = lines.find(l => l.endsWith('.vtt'));
-      if (vttFile) {
-        subtitleUrl = subtitleUrl.replace(/[^/]+\.m3u8$/, vttFile);
-      }
-    }
-
-    return subtitleUrl;
+    this.setSourceTrack(source.trackId);
+    this.originalSubtitles = source.subtitles.map((subtitle) => ({
+      ...subtitle,
+      translation: subtitle.translation || '',
+      status: subtitle.status || 'pending'
+    }));
+    this.currentSubtitleHash = source.hash;
+    this.currentCacheKey = `${this.generateVideoId()}_${source.hash}`;
+    this.hasCache = false;
+    this.refreshSessionCounts();
+    return true;
   }
 
   /**
-   * 获取并解析字幕
-   */
-  async fetchSubtitles() {
-    const url = await this.getSubtitleUrl();
-    console.log('[BilingualSubs] Fetching subtitles from:', url);
-
-    const response = await fetch(url);
-    const content = await response.text();
-
-    this.originalSubtitles = this.parseVTT(content);
-    console.log('[BilingualSubs] Parsed subtitles:', this.originalSubtitles.length, 'segments');
-
-    return this.originalSubtitles;
-  }
-
-  /**
-   * 生成视频唯一 ID
+   * 生成视频唯一 ID（严格区分不同视频）
    */
   generateVideoId() {
     const url = window.location.href;
-    // 尝试从 URL 提取有意义的 ID
-    const urlParts = url.split('/').filter(p => p);
-    const videoId = urlParts.slice(-3).join('_').replace(/[^a-zA-Z0-9_]/g, '_');
-    return `subtitle_${videoId}`;
-  }
-
-  /**
-   * 获取带哈希的缓存键
-   */
-  async getCacheKey() {
-    const baseKey = this.generateVideoId();
-    const subtitleUrl = await this.getSubtitleUrl().catch(() => '');
-    if (!subtitleUrl) return baseKey;
-
-    // 获取字幕内容并计算哈希
-    try {
-      const response = await fetch(subtitleUrl);
-      const content = await response.text();
-      // 使用 background.js 中的 calculateHash
-      const hashResult = await chrome.runtime.sendMessage({
-        action: 'calculateHash',
-        content: content
-      });
-      this.currentContentHash = hashResult.hash;
-      return `${baseKey}_${hashResult.hash}`;
-    } catch (error) {
-      debugLog('Failed to compute content hash:', error);
-      return baseKey;
-    }
+    const hostname = window.location.hostname.replace(/[^a-zA-Z0-9]/g, '_');
+    const pathname = window.location.pathname.replace(/[^a-zA-Z0-9]/g, '_');
+    
+    // 使用 URL 哈希 + 域名 + 路径确保唯一性
+    const urlHash = btoa(url).substring(0, 16).replace(/[^a-zA-Z0-9]/g, '');
+    
+    return `sub_${hostname}_${urlHash}`;
   }
 
   /**
    * 从缓存加载翻译 (US1 - T006)
    */
-  async loadFromCache() {
+  async loadFromCache(source = null) {
     try {
-      // 获取字幕 URL 用于计算哈希
-      const subtitleUrl = await this.getSubtitleUrl().catch(() => null);
-      if (!subtitleUrl) {
+      const subtitleSource = source || null;
+      const subtitleHash = subtitleSource?.hash || this.currentSubtitleHash;
+      const cacheKey = subtitleSource?.hash
+        ? `${this.generateVideoId()}_${subtitleHash}`
+        : this.currentCacheKey;
+
+      if (!subtitleHash || !cacheKey) {
         return false;
       }
 
-      // 获取字幕内容并计算哈希
-      const response = await fetch(subtitleUrl);
-      const content = await response.text();
-
-      // 计算哈希
-      const hashResult = await chrome.runtime.sendMessage({
-        action: 'calculateHash',
-        content: content
-      });
-      const subtitleHash = hashResult.hash;
-
-      // 检查缓存
-      const videoId = this.generateVideoId();
+      this.currentCacheKey = cacheKey;
       const cacheResult = await chrome.runtime.sendMessage({
         action: 'checkCache',
-        videoId: videoId,
-        subtitleHash: subtitleHash
+        videoId: cacheKey,
+        subtitleHash
       });
 
       if (cacheResult.hit && cacheResult.data?.translatedSubs) {
-        // 缓存命中，加载翻译
         const cacheData = cacheResult.data;
-
-        // 重新获取原始字幕并填充翻译
-        this.originalSubtitles = this.parseVTT(content);
         for (let i = 0; i < this.originalSubtitles.length && i < cacheData.translatedSubs.length; i++) {
-          this.originalSubtitles[i].translation = cacheData.translatedSubs[i]?.translatedText || cacheData.translatedSubs[i]?.translation || '';
+          const translatedText = cacheData.translatedSubs[i]?.translatedText || cacheData.translatedSubs[i]?.translation || '';
+          this.originalSubtitles[i].translation = translatedText;
+          this.originalSubtitles[i].status = translatedText ? 'done' : (isSkippableSubtitleText(this.originalSubtitles[i].text) ? 'done' : 'pending');
         }
 
         this.hasCache = true;
+        this.refreshSessionCounts();
         console.log('[BilingualSubs] Loaded from cache:', this.originalSubtitles.length, 'items');
-
-        // 显示缓存提示 (US1)
         showCacheHint('已从缓存加载', 3000);
-
         return true;
       }
 
-      // 缓存未命中，保存当前字幕内容以便后续保存
       this.currentSubtitleHash = subtitleHash;
+      this.currentCacheKey = cacheKey;
       console.log('[BilingualSubs] Cache miss, will translate');
     } catch (error) {
       console.error('[BilingualSubs] Cache load error:', error);
@@ -356,7 +588,7 @@ class SubtitleManager {
    */
   async saveToCache() {
     try {
-      const videoId = this.generateVideoId();
+      const videoId = this.currentCacheKey || this.generateVideoId();
       const subtitleHash = this.currentSubtitleHash;
 
       // 准备翻译后的字幕数据
@@ -397,155 +629,166 @@ class SubtitleManager {
     }
   }
 
-  /**
-   * 保存翻译进度到存储
-   */
-  async saveProgress() {
-    try {
-      const cacheKey = this.generateVideoId();
-      const progressData = {
-        translationProgress: this.translationProgress,
-        isTranslating: this.isTranslating,
-        timestamp: Date.now(),
-        translatedCount: this.originalSubtitles.filter(s => s.translation).length,
-        totalCount: this.originalSubtitles.length
-      };
-      await chrome.storage.local.set({ [`${cacheKey}_progress`]: progressData });
-    } catch (error) {
-      debugLog('Failed to save progress:', error);
-    }
+  refreshSessionCounts() {
+    const totalCount = this.originalSubtitles.length;
+    const doneCount = this.originalSubtitles.filter((item) => item.status === 'done').length;
+    const translatedCount = this.originalSubtitles.filter((item) => item.status === 'done' && item.translation && item.translation.trim()).length;
+    const skippedCount = this.originalSubtitles.filter((item) => item.status === 'done' && !(item.translation && item.translation.trim())).length;
+    const failedCount = this.originalSubtitles.filter((item) => item.status === 'failed').length;
+    translationSession.totalCount = totalCount;
+    translationSession.doneCount = doneCount;
+    translationSession.translatedCount = translatedCount;
+    translationSession.skippedCount = skippedCount;
+    translationSession.failedCount = failedCount;
+    const processedCount = doneCount + failedCount;
+    this.translationProgress = totalCount > 0 ? Math.round((processedCount / totalCount) * 100) : 0;
   }
 
   /**
-   * 从存储加载翻译进度
+   * 翻译字幕（严格逐条串行）
+   * @param {Function|Object|null} optionsOrProgress - 回调或配置 { retryOnly, onProgress }
    */
-  async loadProgress() {
-    try {
-      const cacheKey = this.generateVideoId();
-      const result = await chrome.storage.local.get(`${cacheKey}_progress`);
-      if (result[`${cacheKey}_progress`]) {
-        const progress = result[`${cacheKey}_progress`];
-        // 检查进度是否过期（超过1小时）
-        if (Date.now() - progress.timestamp < 3600000) {
-          this.translationProgress = progress.translationProgress;
-          return progress;
-        }
-      }
-    } catch (error) {
-      debugLog('Failed to load progress:', error);
-    }
-    return null;
-  }
-
-  /**
-   * 翻译字幕 (批量) 带重试机制
-   * @param {Function} onProgress - 进度回调
-   */
-  async translateSubtitles(onProgress = null) {
+  async translateSubtitles(optionsOrProgress = null) {
     if (this.isTranslating) {
       debugLog('Translation already in progress');
-      return;
+      return this.originalSubtitles;
+    }
+
+    let onProgress = null;
+    let retryOnly = false;
+    if (typeof optionsOrProgress === 'function') {
+      onProgress = optionsOrProgress;
+    } else if (optionsOrProgress && typeof optionsOrProgress === 'object') {
+      onProgress = optionsOrProgress.onProgress || null;
+      retryOnly = Boolean(optionsOrProgress.retryOnly);
     }
 
     this.isTranslating = true;
-    this.translationProgress = 0;
-    const total = this.originalSubtitles.length;
+    this.shouldStopTranslation = false;
+    translationSession.isRunning = true;
+    translationSession.isAborted = false;
+    translationSession.fallbackService = null;
+    translationSession.startedAt = Date.now();
+    translationSession.completedAt = 0;
 
-    // 分批翻译
-    const batchSize = CONFIG.batchSize;
-    const batches = [];
+    this.refreshSessionCounts();
+    updateSessionUI(this);
+    console.log('[BilingualSubs] 开始逐条翻译');
 
-    for (let i = 0; i < total; i += batchSize) {
-      batches.push(this.originalSubtitles.slice(i, i + batchSize));
-    }
+    for (let index = 0; index < this.originalSubtitles.length; index++) {
+      if (this.shouldStopTranslation || translationSession.isAborted) {
+        break;
+      }
 
-    debugLog('Starting translation, batches:', batches.length);
+      const subtitle = this.originalSubtitles[index];
+      const text = subtitle?.text || '';
 
-    for (let i = 0; i < batches.length; i++) {
-      const batch = batches[i];
-      const texts = batch.map(sub => sub.text);
+      if (retryOnly && subtitle.status !== 'failed' && subtitle.status !== 'pending') {
+        continue;
+      }
+      if (!retryOnly && subtitle.status === 'done') {
+        continue;
+      }
 
-      let success = false;
-      let retries = 0;
-      const maxRetries = CONFIG.maxRetries;
+      if (isSkippableSubtitleText(text)) {
+        subtitle.translation = '';
+        subtitle.status = 'done';
+        this.refreshSessionCounts();
+        updateSessionUI(this);
+        if (typeof onProgress === 'function') {
+          onProgress(getSessionSnapshot());
+        }
+        continue;
+      }
 
-      while (!success && retries <= maxRetries) {
+      subtitle.status = 'translating';
+      this.refreshSessionCounts();
+      updateSessionUI(this);
+
+      let translated = '';
+      let lastError = null;
+      const maxRetriesPerItem = 2;
+
+      for (let attempt = 0; attempt <= maxRetriesPerItem; attempt++) {
         try {
-          // 发送翻译请求到 background script
           const response = await chrome.runtime.sendMessage({
-            action: 'translate',
-            texts: texts
+            action: 'translateOne',
+            text: text
           });
 
-          debugLog('Translate response:', response);
-
-          if (response.success) {
-            const translations = response.results;
-            debugLog('Translations received:', translations.length);
-            // 更新翻译结果
-            batch.forEach((sub, idx) => {
-              sub.translation = translations[idx] || '';
-            });
-            success = true;
-          } else if (response.error) {
-            throw new Error(response.error);
+          if (!response?.success) {
+            const detailedError = response?.suggestedAction
+              ? `${response.errorMessage || response.error || '翻译失败'}：${response.suggestedAction}`
+              : (response?.error || '翻译失败');
+            throw new Error(detailedError);
           }
-        } catch (error) {
-          retries++;
-          debugLog(`Translation batch ${i + 1} failed (attempt ${retries}/${maxRetries + 1}):`, error.message);
 
-          if (retries > maxRetries) {
-            console.error(`[BilingualSubs] Batch ${i + 1} failed after ${maxRetries + 1} attempts`);
-            // 继续使用原始文本
-            batch.forEach((sub) => {
-              if (!sub.translation) sub.translation = '';
-            });
-          } else {
-            // 指数退避重试
-            const delay = Math.min(1000 * Math.pow(2, retries - 1), 10000);
-            await new Promise(resolve => setTimeout(resolve, delay));
+          const currentTranslation = String(response.translation || '').trim();
+          if (!currentTranslation || currentTranslation === text.trim()) {
+            throw new Error('翻译结果无效，请稍后重试');
+          }
+
+          if (response.fallbackFrom === 'openai' && !translationSession.fallbackService) {
+            translationSession.fallbackService = 'google';
+            console.log('[BilingualSubs] OpenAI 不可用，已自动降级到 Google 翻译');
+          }
+
+          translated = currentTranslation;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (attempt < maxRetriesPerItem) {
+            const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
+            await new Promise((resolve) => setTimeout(resolve, delay));
           }
         }
       }
 
-      this.translationProgress = Math.min(100, Math.round((i + 1) / batches.length * 100));
-
-      // 保存进度
-      await this.saveProgress();
-
-      if (onProgress) {
-        onProgress(this.translationProgress);
+      if (translated) {
+        subtitle.translation = translated;
+        subtitle.status = 'done';
+        console.log(`[BilingualSubs] 第 ${subtitle.id} 条翻译完成`);
+      } else {
+        subtitle.translation = '';
+        subtitle.status = 'failed';
+        console.log(`[BilingualSubs] 第 ${subtitle.id} 条翻译失败：${lastError?.message || '未知错误'}`);
       }
 
-      // 避免请求过快
-      if (i < batches.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, CONFIG.requestDelay));
+      this.refreshSessionCounts();
+      updateSessionUI(this);
+      if (subtitleDisplay) {
+        subtitleDisplay.updateSubtitle();
+      }
+      if (typeof onProgress === 'function') {
+        onProgress(getSessionSnapshot());
+      }
+
+      if (CONFIG.requestDelay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, CONFIG.requestDelay));
       }
     }
 
     this.isTranslating = false;
+    translationSession.isRunning = false;
+    translationSession.completedAt = Date.now();
+    this.refreshSessionCounts();
 
-    // 清除进度
-    await this.clearProgress();
-
-    debugLog('Translation completed');
-
-    // 保存到缓存
-    await this.saveToCache();
-
-    return this.originalSubtitles;
-  }
-
-  /**
-   * 清除进度
-   */
-  async clearProgress() {
-    try {
-      const cacheKey = this.generateVideoId();
-      await chrome.storage.local.remove(`${cacheKey}_progress`);
-    } catch (error) {
-      debugLog('Failed to clear progress:', error);
+    if (this.shouldStopTranslation || translationSession.isAborted) {
+      console.log('[BilingualSubs] 翻译已中断');
+      updateSessionUI(this);
+      return this.originalSubtitles;
     }
+
+    const hasFailed = this.originalSubtitles.some((item) => item.status === 'failed');
+    if (!hasFailed) {
+      await this.saveToCache();
+      console.log('[BilingualSubs] 翻译全部完成');
+    } else {
+      console.log('[BilingualSubs] 翻译结束，存在失败条目，未写入缓存');
+    }
+
+    updateSessionUI(this);
+    return this.originalSubtitles;
   }
 
   /**
@@ -589,9 +832,20 @@ class SubtitleManager {
    * 清除缓存
    */
   async clearCache() {
-    const cacheKey = this.generateVideoId();
-    await chrome.storage.local.remove([cacheKey, `${cacheKey}_config`]);
+    const baseKey = this.generateVideoId();
+    const localData = await chrome.storage.local.get(null);
+    const keysToRemove = Object.keys(localData).filter((key) => key.startsWith(baseKey));
+    if (keysToRemove.length > 0) {
+      await chrome.storage.local.remove(keysToRemove);
+    }
     this.hasCache = false;
+    translationSession.completedAt = 0;
+    translationSession.doneCount = 0;
+    translationSession.failedCount = 0;
+    this.originalSubtitles.forEach((item) => {
+      item.translation = '';
+      item.status = isSkippableSubtitleText(item.text) ? 'done' : 'pending';
+    });
     console.log('[BilingualSubs] Cache cleared');
   }
 }
@@ -605,6 +859,9 @@ class SubtitleDisplay {
     this.isEnabled = true;
     this.mode = 'bilingual'; // 'bilingual' | 'chinese' | 'english'
     this.video = null;
+    this.progressElement = null;
+    this.lastSubtitleId = null;
+    this.lastRenderedHtml = '';
   }
 
   /**
@@ -655,6 +912,11 @@ class SubtitleDisplay {
     this.subtitleElement.className = 'bilingual-subs-text';
     this.container.appendChild(this.subtitleElement);
 
+    this.progressElement = document.createElement('div');
+    this.progressElement.className = 'bilingual-subs-progress';
+    this.progressElement.style.display = 'none';
+    this.container.appendChild(this.progressElement);
+
     // 插入到视频容器中
     if (videoContainer && videoContainer !== document.body) {
       videoContainer.style.position = 'relative';
@@ -683,25 +945,41 @@ class SubtitleDisplay {
 
     if (subtitle) {
       let html = '';
+      const hasValidTranslation = subtitle.translation && subtitle.translation.trim() !== subtitle.text.trim();
+      const isFailed = subtitle.status === 'failed';
       switch (this.mode) {
         case 'bilingual':
-          html = subtitle.translation
+          html = hasValidTranslation
             ? `<div class="sub-chinese">${subtitle.translation}</div><div class="sub-english">${subtitle.text}</div>`
+            : isFailed
+              ? `<div class="sub-failed">翻译失败</div><div class="sub-english">${subtitle.text}</div>`
             : `<div class="sub-english">${subtitle.text}</div>`;
           break;
         case 'chinese':
-          html = subtitle.translation
+          html = hasValidTranslation
             ? `<div class="sub-chinese">${subtitle.translation}</div>`
+            : isFailed
+              ? `<div class="sub-failed">翻译失败</div>`
             : `<div class="sub-english">${subtitle.text}</div>`;
           break;
         case 'english':
           html = `<div class="sub-english">${subtitle.text}</div>`;
           break;
       }
-      this.subtitleElement.innerHTML = html;
+      if (this.lastSubtitleId !== subtitle.id || this.lastRenderedHtml !== html) {
+        this.subtitleElement.innerHTML = html;
+        this.lastSubtitleId = subtitle.id;
+        this.lastRenderedHtml = html;
+      }
+      this.subtitleElement.style.display = 'inline-block';
       this.container.style.display = 'block';
     } else {
-      this.container.style.display = 'none';
+      this.lastSubtitleId = null;
+      this.lastRenderedHtml = '';
+      this.subtitleElement.style.display = 'none';
+      if (this.progressElement?.style.display === 'none') {
+        this.container.style.display = 'none';
+      }
     }
   }
 
@@ -731,9 +1009,20 @@ class SubtitleDisplay {
    * 显示翻译进度
    */
   showProgress(progress) {
-    if (this.subtitleElement) {
-      this.subtitleElement.innerHTML = `<div class="sub-progress">🔄 翻译进度：${progress}%</div>`;
+    if (this.progressElement) {
+      this.progressElement.innerHTML = `<div class="sub-progress">🔄 翻译进度：${progress}%</div>`;
+      this.progressElement.style.display = 'block';
       this.container.style.display = 'block';
+    }
+  }
+
+  hideProgress() {
+    if (this.progressElement) {
+      this.progressElement.style.display = 'none';
+      this.progressElement.innerHTML = '';
+    }
+    if (this.subtitleElement?.style.display === 'none') {
+      this.container.style.display = 'none';
     }
   }
 
@@ -788,6 +1077,9 @@ class ControlPanel {
           <button id="bilingual-subs-translate" class="panel-btn primary">翻译字幕</button>
         </div>
         <div class="panel-row">
+          <small id="bilingual-subs-service-indicator">当前翻译模式：加载中...</small>
+        </div>
+        <div class="panel-row">
           <button id="bilingual-subs-clear-cache" class="panel-btn">清除缓存</button>
           <button id="bilingual-subs-export" class="panel-btn">导出字幕</button>
         </div>
@@ -800,8 +1092,23 @@ class ControlPanel {
 
     document.body.appendChild(this.panel);
     this.bindEvents();
+    this.updateTranslationModeIndicator();
+    updateTranslateButtonLabel(this.manager);
     this.isAttached = true;
     console.log('[BilingualSubs] Control panel created');
+  }
+
+  async updateTranslationModeIndicator() {
+    const indicator = document.getElementById('bilingual-subs-service-indicator');
+    if (!indicator) return;
+
+    try {
+      const cfg = await this.manager.getCurrentTranslationConfig();
+      const modeName = cfg?.service === 'openai' ? 'OpenAI 接口' : 'Google 翻译';
+      indicator.textContent = `当前翻译模式：${modeName}`;
+    } catch {
+      indicator.textContent = '当前翻译模式：Google 翻译';
+    }
   }
 
   /**
@@ -827,18 +1134,41 @@ class ControlPanel {
     // 翻译字幕
     document.getElementById('bilingual-subs-translate')?.addEventListener('click', async () => {
       const statusEl = document.getElementById('bilingual-subs-status');
-      statusEl.textContent = '正在翻译...';
+      await this.updateTranslationModeIndicator();
+      const cfg = await this.manager.getCurrentTranslationConfig();
+      const modeName = cfg?.service === 'openai' ? 'OpenAI 接口' : 'Google 翻译';
 
-      await this.manager.translateSubtitles((progress) => {
-        statusEl.textContent = `翻译进度：${progress}%`;
-        this.display.showProgress(progress);
-      });
+      const refreshedEligibility = await evaluateSubtitleEligibility(document.querySelector('video'), this.manager.originalSubtitles, 'user_retry');
+      if (refreshedEligibility.status !== 'eligible') {
+        showRejectionNotice(refreshedEligibility);
+        statusEl.textContent = `${getRejectionNoticeByStatus(refreshedEligibility.status).message}。${getRejectionNoticeByStatus(refreshedEligibility.status).actionHint}`;
+        return;
+      }
 
-      statusEl.textContent = '翻译完成!';
-      setTimeout(() => {
-        statusEl.textContent = '';
-      }, 3000);
-      this.display.updateSubtitle();
+      hideRejectionNotice();
+      this.manager.setSourceTrack(refreshedEligibility.sourceTrackId);
+      statusEl.textContent = `正在使用 ${modeName} 翻译...`;
+
+      try {
+        const hasFailed = this.manager.originalSubtitles.some((item) => item.status === 'failed');
+        await this.manager.translateSubtitles({
+          retryOnly: hasFailed,
+          onProgress: (session) => {
+            const processedCount = (session.doneCount || 0) + (session.failedCount || 0);
+            const percent = session.totalCount > 0
+              ? Math.round((processedCount / session.totalCount) * 100)
+              : 0;
+            statusEl.textContent = session.failedCount > 0
+              ? `已翻译 ${session.doneCount}/${session.totalCount} 条，失败 ${session.failedCount} 条`
+              : `已翻译 ${session.doneCount}/${session.totalCount} 条`;
+            this.display.showProgress(percent);
+          }
+        });
+        updateSessionUI(this.manager);
+        this.display.updateSubtitle();
+      } catch (error) {
+        statusEl.textContent = `❌ 翻译失败：${error.message || '请稍后重试'}`;
+      }
     });
 
     // 清除缓存
@@ -880,10 +1210,17 @@ class ControlPanel {
   updateStatus(subtitleCount, translatedCount, hasCache) {
     const statusEl = document.getElementById('bilingual-subs-status');
     if (statusEl) {
+      const failedCount = this.manager.originalSubtitles.filter((item) => item.status === 'failed').length;
       if (hasCache) {
         statusEl.textContent = `✅ 已加载缓存 (${translatedCount}/${subtitleCount})`;
-      } else if (translatedCount > 0) {
-        statusEl.textContent = `✅ 翻译完成 (${translatedCount}/${subtitleCount})`;
+      } else if (translationSession.isRunning) {
+        statusEl.textContent = failedCount > 0
+          ? `已翻译 ${translatedCount}/${subtitleCount} 条，失败 ${failedCount} 条`
+          : `已翻译 ${translatedCount}/${subtitleCount} 条`;
+      } else if (translatedCount > 0 || failedCount > 0) {
+        statusEl.textContent = failedCount > 0
+          ? `翻译完成（失败 ${failedCount} 条，可点击重试）`
+          : `✅ 翻译完成 (${translatedCount}/${subtitleCount})`;
       } else {
         statusEl.textContent = `等待翻译 (${subtitleCount}条)`;
       }
@@ -896,6 +1233,75 @@ const subtitleManager = new SubtitleManager();
 let subtitleDisplay = null;
 let controlPanel = null;
 let autoTranslateEnabled = true;
+let trackChangeObserver = null;
+let trackChangeDebounceTimer = null;
+
+function updateTranslateButtonLabel(manager) {
+  const button = document.getElementById('bilingual-subs-translate');
+  if (!button) return;
+  const hasFailed = manager.originalSubtitles.some((item) => item.status === 'failed');
+  button.textContent = hasFailed ? '重试失败项' : '翻译字幕';
+}
+
+function updateSessionUI(manager) {
+  const snapshot = getSessionSnapshot();
+  const statusEl = document.getElementById('bilingual-subs-status');
+  const processedCount = snapshot.doneCount + snapshot.failedCount;
+  const total = snapshot.totalCount || manager.originalSubtitles.length;
+
+  if (statusEl && total > 0) {
+    const fallbackText = snapshot.fallbackService === 'google' ? '（已自动降级到 Google）' : '';
+    if (snapshot.isRunning) {
+      statusEl.textContent = snapshot.failedCount > 0
+        ? `已翻译 ${snapshot.translatedCount}/${total} 条，失败 ${snapshot.failedCount} 条${fallbackText}`
+        : `已翻译 ${snapshot.translatedCount}/${total} 条${fallbackText}`;
+    } else if (processedCount >= total) {
+      statusEl.textContent = snapshot.failedCount > 0
+        ? `翻译完成（失败 ${snapshot.failedCount} 条，可点击重试）${fallbackText}`
+        : `翻译完成（已生成 ${snapshot.translatedCount} 条）${fallbackText}`;
+    } else {
+      statusEl.textContent = `等待翻译 (${total} 条)`;
+    }
+  }
+
+  if (subtitleDisplay) {
+    if (snapshot.isRunning) {
+      const percent = total > 0 ? Math.round((processedCount / total) * 100) : 0;
+      subtitleDisplay.showProgress(percent);
+    } else {
+      subtitleDisplay.hideProgress();
+    }
+  }
+
+  if (controlPanel) {
+    controlPanel.updateStatus(
+      manager.originalSubtitles.length,
+      snapshot.translatedCount,
+      manager.hasCache
+    );
+  }
+
+  updateTranslateButtonLabel(manager);
+}
+
+function showRejectionNotice(eligibility) {
+  const notice = getRejectionNoticeByStatus(eligibility?.status);
+  const statusEl = document.getElementById('bilingual-subs-status');
+  if (statusEl) {
+    statusEl.textContent = `${notice.message}。${notice.actionHint}`;
+  }
+  if (subtitleDisplay) {
+    subtitleDisplay.showMessage(`${notice.message}，${notice.actionHint}`, 8000);
+  }
+  console.log(`[BilingualSubs] 拒绝生成：${notice.message}`);
+}
+
+function hideRejectionNotice() {
+  const statusEl = document.getElementById('bilingual-subs-status');
+  if (statusEl && /拒绝生成/.test(statusEl.textContent || '')) {
+    statusEl.textContent = '';
+  }
+}
 
 /**
  * 使用 MutationObserver 监听字幕轨道变化
@@ -918,6 +1324,89 @@ function observeSubtitleTrack() {
 
   observer.observe(video, { childList: true });
   return observer;
+}
+
+function getTrackSnapshot(video) {
+  if (!video) return '';
+  const tracks = scanAvailableTracks(video);
+  const textTrackModes = Array.from(video.textTracks || []).map((track) => track.mode).join('|');
+  return JSON.stringify(tracks.map((track) => ({
+    id: track.trackId,
+    src: track.src,
+    lang: track.languageCode,
+    label: track.label,
+    active: track.isActive
+  }))) + `::${textTrackModes}`;
+}
+
+function observeTrackChanges(video) {
+  if (!video) return null;
+  if (trackChangeObserver) {
+    clearInterval(trackChangeObserver);
+  }
+  let previousSnapshot = getTrackSnapshot(video);
+  trackChangeObserver = setInterval(async () => {
+    const currentSnapshot = getTrackSnapshot(video);
+    if (currentSnapshot === previousSnapshot) {
+      return;
+    }
+
+    previousSnapshot = currentSnapshot;
+    if (trackChangeDebounceTimer) {
+      clearTimeout(trackChangeDebounceTimer);
+    }
+
+    trackChangeDebounceTimer = setTimeout(async () => {
+      const previous = eligibilityState;
+      const next = await evaluateSubtitleEligibility(video, subtitleManager.originalSubtitles, 'track_changed');
+      if (next.status === 'eligible') {
+        const sourceChanged = subtitleManager.applySubtitleSource(next.subtitleSource || null);
+        subtitleManager.setSourceTrack(next.sourceTrackId);
+        hideRejectionNotice();
+        if (sourceChanged) {
+          await subtitleManager.loadFromCache(next.subtitleSource || null);
+          updateSessionUI(subtitleManager);
+          subtitleDisplay?.updateSubtitle();
+        }
+        if (previous.status !== 'eligible') {
+          console.log('[BilingualSubs] 已恢复翻译资格');
+        }
+        return;
+      }
+
+      if (previous.status === 'eligible' && next.status.startsWith('rejected')) {
+        subtitleManager.abortTranslation('英文字幕轨道失效');
+        showRejectionNotice(next);
+      }
+    }, 500);
+  }, 1000);
+  return trackChangeObserver;
+}
+
+async function loadEligibleSource(video, trigger = 'page_updated') {
+  let eligibility = await evaluateSubtitleEligibility(video, subtitleManager.originalSubtitles, trigger);
+  if (eligibility.status === 'pending') {
+    for (let retry = 0; retry < 3 && eligibility.status === 'pending'; retry++) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      eligibility = await evaluateSubtitleEligibility(video, subtitleManager.originalSubtitles, trigger);
+    }
+  }
+  return eligibility;
+}
+
+function teardownRuntime() {
+  if (trackChangeObserver) {
+    clearInterval(trackChangeObserver);
+    trackChangeObserver = null;
+  }
+  if (trackChangeDebounceTimer) {
+    clearTimeout(trackChangeDebounceTimer);
+    trackChangeDebounceTimer = null;
+  }
+  subtitleDisplay?.container?.remove();
+  controlPanel?.panel?.remove();
+  subtitleDisplay = null;
+  controlPanel = null;
 }
 
 /**
@@ -982,6 +1471,8 @@ async function init() {
  * 视频准备就绪后初始化
  */
 async function initializeAfterVideoReady(video, track = null) {
+  teardownRuntime();
+
   // 初始化显示
   subtitleDisplay = new SubtitleDisplay(subtitleManager);
   if (!subtitleDisplay.init()) {
@@ -993,70 +1484,76 @@ async function initializeAfterVideoReady(video, track = null) {
   controlPanel = new ControlPanel(subtitleDisplay, subtitleManager);
   controlPanel.create();
 
+  observeTrackChanges(video);
+
   // 获取字幕
   try {
-    // 先尝试加载缓存 (US1)
-    const hasCache = await subtitleManager.loadFromCache();
+    const eligibility = await loadEligibleSource(video, 'page_updated');
+
+    if (eligibility.status !== 'eligible') {
+      showRejectionNotice(eligibility);
+      return;
+    }
+
+    subtitleManager.applySubtitleSource(eligibility.subtitleSource || null, true);
+    subtitleManager.setSourceTrack(eligibility.sourceTrackId);
+    hideRejectionNotice();
+    subtitleDisplay.updateSubtitle();
+
+    const hasCache = await subtitleManager.loadFromCache(eligibility.subtitleSource || null);
 
     if (hasCache) {
-      // 有缓存，直接加载
-      const translatedCount = subtitleManager.originalSubtitles.filter(s => s.translation).length;
+      subtitleManager.refreshSessionCounts();
+      translationSession.completedAt = Date.now();
+      subtitleDisplay.updateSubtitle();
 
       const statusEl = document.getElementById('bilingual-subs-status');
       if (statusEl) {
-        statusEl.textContent = `✅ 已加载缓存 (${translatedCount}/${subtitleManager.originalSubtitles.length})`;
+        statusEl.textContent = `✅ 已加载缓存 (${translationSession.translatedCount}/${subtitleManager.originalSubtitles.length})`;
         setTimeout(() => {
           statusEl.textContent = '';
         }, 5000);
       }
 
-      // 更新面板状态
       controlPanel.updateStatus(
         subtitleManager.originalSubtitles.length,
-        translatedCount,
+        translationSession.translatedCount,
         hasCache
       );
+      updateSessionUI(subtitleManager);
     } else {
-      // 没有缓存，获取新字幕
-      await subtitleManager.fetchSubtitles();
+      console.log('[BilingualSubs] 已识别英文字幕，准备翻译');
 
-      // 语言检测 (US4 - T020, T021)
-      // 注意：我们需要翻译的是英文字幕 → 中文
-      // 所以应该检测是否为英文，非英文才不翻译
-      const detectedLanguage = detectSubtitleLanguage(subtitleManager.originalSubtitles);
-      console.log('[BilingualSubs] Detected language:', detectedLanguage);
-
-      if (detectedLanguage !== 'en') {
-        // 非英文字幕，不触发翻译（仅支持英文源字幕）
-        const statusEl = document.getElementById('bilingual-subs-status');
-        if (statusEl) {
-          statusEl.textContent = '⚠️ 暂不支持此语言（仅支持英文源字幕翻译为中文）';
-        }
-        // 显示不支持的提示
-        subtitleDisplay.showMessage('仅支持英文翻译为中文', 5000);
-        return;
-      }
-
-      // 自动开始翻译（延迟执行，避免阻塞页面）
       if (autoTranslateEnabled) {
         setTimeout(async () => {
           const statusEl = document.getElementById('bilingual-subs-status');
+          const cfg = await subtitleManager.getCurrentTranslationConfig();
+          const modeName = cfg?.service === 'openai' ? 'OpenAI 接口' : 'Google 翻译';
           if (statusEl) {
-            statusEl.textContent = '正在加载字幕...';
+            statusEl.textContent = `正在基于英文字幕翻译（${modeName}）...`;
           }
 
-          await subtitleManager.translateSubtitles((progress) => {
-            subtitleDisplay.showProgress(progress);
+          try {
+            await subtitleManager.translateSubtitles({
+              onProgress: (session) => {
+                const processedCount = (session.doneCount || 0) + (session.failedCount || 0);
+                const percent = session.totalCount > 0
+                  ? Math.round((processedCount / session.totalCount) * 100)
+                  : 0;
+                if (statusEl) {
+                  statusEl.textContent = session.failedCount > 0
+                    ? `已翻译 ${session.translatedCount}/${session.totalCount} 条，失败 ${session.failedCount} 条`
+                    : `已翻译 ${session.translatedCount}/${session.totalCount} 条`;
+                }
+                subtitleDisplay.showProgress(percent);
+              }
+            });
+            updateSessionUI(subtitleManager);
+          } catch (error) {
             if (statusEl) {
-              statusEl.textContent = `翻译进度：${progress}%`;
+              statusEl.textContent = `❌ 翻译失败：${error.message || '请稍后重试'}`;
             }
-          });
-
-          if (statusEl) {
-            statusEl.textContent = '✅ 翻译完成';
-            setTimeout(() => {
-              statusEl.textContent = '';
-            }, 3000);
+            subtitleDisplay.showMessage(`翻译失败：${error.message || '请稍后重试'}`, 6000);
           }
         }, CONFIG.autoTranslateDelay);
       }
@@ -1076,22 +1573,58 @@ async function initializeAfterVideoReady(video, track = null) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.action) {
     case 'getStatus':
-      const translatedCount = subtitleManager.originalSubtitles.filter(s => s.translation).length;
+      subtitleManager.refreshSessionCounts();
       sendResponse({
         subtitleCount: subtitleManager.originalSubtitles.length,
-        translatedCount: translatedCount,
+        translatedCount: translationSession.translatedCount,
         isTranslating: subtitleManager.isTranslating,
         progress: subtitleManager.translationProgress,
-        hasCache: subtitleManager.hasCache
+        hasCache: subtitleManager.hasCache,
+        eligibility: eligibilityState,
+        session: getSessionSnapshot()
       });
       break;
 
     case 'startTranslation':
-      subtitleManager.translateSubtitles((progress) => {
-        subtitleDisplay.showProgress(progress);
-      }).then(() => {
-        sendResponse({ success: true });
-      });
+      evaluateSubtitleEligibility(document.querySelector('video'), subtitleManager.originalSubtitles, 'user_retry')
+        .then((eligibility) => {
+          if (eligibility.status !== 'eligible') {
+            showRejectionNotice(eligibility);
+            const notice = getRejectionNoticeByStatus(eligibility.status);
+            sendResponse({
+              success: false,
+              error: `${notice.message}。${notice.actionHint}`,
+              code: notice.code,
+              eligibility
+            });
+            return;
+          }
+
+          if (eligibility.subtitleSource) {
+            subtitleManager.applySubtitleSource(eligibility.subtitleSource);
+          }
+          subtitleManager.setSourceTrack(eligibility.sourceTrackId);
+          hideRejectionNotice();
+          const hasFailed = subtitleManager.originalSubtitles.some((item) => item.status === 'failed');
+          subtitleManager.translateSubtitles({
+            retryOnly: hasFailed,
+            onProgress: (session) => {
+              const processedCount = (session.doneCount || 0) + (session.failedCount || 0);
+              const percent = session.totalCount > 0
+                ? Math.round((processedCount / session.totalCount) * 100)
+                : 0;
+              subtitleDisplay.showProgress(percent);
+            }
+          }).then(() => {
+            updateSessionUI(subtitleManager);
+            sendResponse({ success: true, eligibility });
+          }).catch((error) => {
+            sendResponse({ success: false, error: error.message || '翻译失败，请稍后重试', eligibility });
+          });
+        })
+        .catch((error) => {
+          sendResponse({ success: false, error: error.message || '翻译资格检测失败' });
+        });
       return true;
 
     case 'setMode':
@@ -1137,7 +1670,14 @@ new MutationObserver(() => {
   const url = location.href;
   if (url !== lastUrl) {
     lastUrl = url;
+    subtitleManager.abortTranslation('页面 URL 已变化');
+    teardownRuntime();
+    subtitleManager.resetForNewSource();
     console.log('[BilingualSubs] URL changed, reinitializing...');
     setTimeout(init, 1000);
   }
 }).observe(document, { subtree: true, childList: true });
+
+window.addEventListener('beforeunload', () => {
+  subtitleManager.abortTranslation('页面即将卸载');
+});

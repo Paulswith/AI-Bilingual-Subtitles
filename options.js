@@ -16,6 +16,9 @@ const DEFAULT_CONFIG = {
     prompt: '你是一个专业的字幕翻译助手。请将以下英文内容翻译成自然流畅的中文，保持专业术语准确，译文简洁易懂。'
   },
 
+  // 请求超时（毫秒）
+  timeout: 30000,
+
   // 显示设置
   display: {
     defaultMode: 'bilingual',
@@ -25,8 +28,8 @@ const DEFAULT_CONFIG = {
 
   // 高级设置
   advanced: {
-    batchSize: 30,
-    requestDelay: 200,
+    batchSize: 100,        // 增大批次大小以提高性能
+    requestDelay: 50,      // 减小请求间隔 (ms)
     cacheExpiry: 7,
     maxRetries: 3,
     debugMode: false
@@ -50,6 +53,7 @@ const elements = {
   requestDelay: document.getElementById('request-delay'),
   cacheExpiry: document.getElementById('cache-expiry'),
   maxRetries: document.getElementById('max-retries'),
+  timeoutMs: document.getElementById('timeout-ms'),
   debugMode: document.getElementById('debug-mode'),
   saveGeneral: document.getElementById('save-general'),
   resetGeneral: document.getElementById('reset-general'),
@@ -143,7 +147,8 @@ async function saveConfig(config) {
         translationService: config.translationService,
         openai: config.openai,
         display: config.display,
-        advanced: config.advanced
+        advanced: config.advanced,
+        timeout: config.timeout
       }
     });
 
@@ -172,6 +177,7 @@ function applyConfigToUI(config) {
   elements.requestDelay.value = config.advanced.requestDelay;
   elements.cacheExpiry.value = config.advanced.cacheExpiry;
   elements.maxRetries.value = config.advanced.maxRetries;
+  elements.timeoutMs.value = config.timeout || DEFAULT_CONFIG.timeout;
   elements.debugMode.checked = config.advanced.debugMode;
 
   // 翻译服务
@@ -235,7 +241,8 @@ function initGeneralSettings() {
         cacheExpiry: parseInt(elements.cacheExpiry.value) || 7,
         maxRetries: parseInt(elements.maxRetries.value) || 3,
         debugMode: elements.debugMode.checked
-      }
+      },
+      timeout: parseInt(elements.timeoutMs.value) || 30000
     };
 
     const success = await saveConfig(config);
@@ -342,7 +349,8 @@ async function refreshCacheStats() {
       const bytes = JSON.stringify(value).length;
       totalBytes += bytes;
 
-      if (key.startsWith('subtitle_') && !key.endsWith('_config') && !key.endsWith('_progress') && !key.endsWith('_hash')) {
+      // 匹配新旧两种缓存键格式
+      if ((key.startsWith('sub_') || key.startsWith('subtitle_')) && !key.endsWith('_config') && !key.endsWith('_progress') && !key.endsWith('_hash')) {
         videoCount++;
         if (value.subtitles) {
           subtitleCount += value.subtitles.length;
