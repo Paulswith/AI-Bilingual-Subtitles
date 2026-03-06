@@ -51,12 +51,18 @@ const translationSession = {
   translatedCount: 0,
   skippedCount: 0,
   failedCount: 0,
+  activeService: 'google',
+  activeServiceDisplayName: 'Google 翻译',
   fallbackService: null,
   isRunning: false,
   isAborted: false,
   startedAt: 0,
   completedAt: 0
 };
+
+function getServiceDisplayName(service) {
+  return service === 'openai' ? 'OpenAI 兼容接口' : 'Google 翻译';
+}
 
 function isSkippableSubtitleText(text) {
   const normalized = typeof text === 'string' ? text.trim() : '';
@@ -71,6 +77,8 @@ function getSessionSnapshot() {
     translatedCount: translationSession.translatedCount,
     skippedCount: translationSession.skippedCount,
     failedCount: translationSession.failedCount,
+    activeService: translationSession.activeService,
+    activeServiceDisplayName: translationSession.activeServiceDisplayName,
     fallbackService: translationSession.fallbackService,
     isRunning: translationSession.isRunning,
     isAborted: translationSession.isAborted,
@@ -149,31 +157,127 @@ function detectSubtitleLanguage(cues, explicitLanguage = '') {
   return 'unknown';
 }
 
-function scanAvailableTracks(video = null) {
-  const targetVideo = video || document.querySelector('video');
+function isElementVisible(element) {
+  if (!element) return false;
+  const style = window.getComputedStyle(element);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+    return false;
+  }
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function getTrackId(trackEl, fallbackIndex) {
+  if (!trackEl) {
+    return `texttrack_${fallbackIndex}`;
+  }
+  const existingId = trackEl.dataset.bilingualTrackId;
+  if (existingId) return existingId;
+  const nextId = `${Date.now()}_${fallbackIndex}`;
+  trackEl.dataset.bilingualTrackId = nextId;
+  return nextId;
+}
+
+function resolveActivePlayerContext(preferredVideo = null) {
+  const buildContext = (videoEl, playerEl = null) => {
+    if (!videoEl) return null;
+    const ownerPlayer = playerEl || videoEl.closest('[data-media-player]') || videoEl.closest('.lesson-video-player') || null;
+    return {
+      playerEl: ownerPlayer,
+      videoEl,
+      captionsEl: ownerPlayer?.querySelector('.vds-captions') || null,
+      textTracks: Array.from(videoEl.textTracks || []),
+      trackElements: Array.from(videoEl.querySelectorAll('track'))
+    };
+  };
+
+  const playerContexts = Array.from(document.querySelectorAll('[data-media-player]'))
+    .map((playerEl) => buildContext(playerEl.querySelector('video'), playerEl))
+    .filter(Boolean);
+  const fallbackContexts = Array.from(document.querySelectorAll('video'))
+    .map((videoEl) => buildContext(videoEl))
+    .filter(Boolean);
+  const candidates = playerContexts.length > 0 ? playerContexts : fallbackContexts;
+  if (!candidates.length) return null;
+
+  const scoreCandidate = (context) => {
+    let score = 0;
+    const { playerEl, videoEl, captionsEl, textTracks, trackElements } = context;
+    if (preferredVideo && videoEl === preferredVideo) score += 25;
+    if (playerEl?.hasAttribute('data-started')) score += 60;
+    if (playerEl?.getAttribute('data-captions') !== null) score += 30;
+    if (isElementVisible(playerEl || videoEl)) score += 20;
+    if (!videoEl.paused) score += 15;
+    if (videoEl.readyState >= 2) score += 10;
+    if (trackElements.length > 0) score += 5;
+    if (textTracks.some((track) => track.mode === 'showing')) score += 120;
+    if (textTracks.some((track) => normalizeLanguageCode(track.language) === 'en' || /english|英文/i.test(track.label || ''))) score += 50;
+    if ((captionsEl?.textContent || '').trim()) score += 10;
+    return score;
+  };
+
+  return candidates
+    .map((context) => ({ context, score: scoreCandidate(context) }))
+    .sort((a, b) => b.score - a.score)[0]
+    ?.context || null;
+}
+
+function getActiveVideoElement(preferredVideo = null) {
+  return resolveActivePlayerContext(preferredVideo)?.videoEl || null;
+}
+
+function serializeCueList(cues = []) {
+  return cues.map((cue, index) => {
+    const text = String(cue?.text || '').trim();
+    return `${index + 1}\n${cue?.startTime || 0} --> ${cue?.endTime || 0}\n${text}`;
+  }).join('\n\n');
+}
+
+function buildSubtitlesFromCues(cues = []) {
+  return cues
+    .map((cue, index) => ({
+      id: index + 1,
+      startTime: Number(cue?.startTime || 0),
+      endTime: Number(cue?.endTime || 0),
+      text: String(cue?.text || '').trim(),
+      translation: '',
+      status: 'pending'
+    }))
+    .filter((cue) => cue.text);
+}
+
+function scanAvailableTracks(contextOrVideo = null) {
+  const context = contextOrVideo?.videoEl ? contextOrVideo : resolveActivePlayerContext(contextOrVideo);
+  const targetVideo = context?.videoEl;
   if (!targetVideo) return [];
 
-  const tracks = Array.from(targetVideo.querySelectorAll('track'));
-  return tracks.map((trackEl, index) => {
-    const trackObj = trackEl.track;
-    const trackId = trackEl.dataset.bilingualTrackId || `${Date.now()}_${index}`;
-    trackEl.dataset.bilingualTrackId = trackId;
-    const languageCode = normalizeLanguageCode(trackEl.srclang || trackEl.getAttribute('srclang') || '');
-    const label = trackEl.label || trackEl.getAttribute('label') || '';
-    const readyState = trackObj?.readyState ?? 0;
-    const isReadable = Boolean(trackEl.src) && readyState !== 3;
+  const trackElements = context.trackElements || [];
+  const textTracks = context.textTracks || [];
+  const trackCount = Math.max(trackElements.length, textTracks.length);
+
+  return Array.from({ length: trackCount }).map((_, index) => {
+    const trackEl = trackElements[index] || null;
+    const textTrack = textTracks[index] || null;
+    const languageCode = normalizeLanguageCode(
+      textTrack?.language || trackEl?.srclang || trackEl?.getAttribute('srclang') || ''
+    );
+    const label = textTrack?.label || trackEl?.label || trackEl?.getAttribute('label') || '';
+    const readyState = trackEl?.track?.readyState ?? null;
+    const cues = Array.from(textTrack?.cues || []);
 
     return {
-      trackId,
+      trackId: getTrackId(trackEl, index),
       label,
       languageCode,
-      kind: trackEl.kind || trackEl.getAttribute('kind') || '',
-      isActive: trackObj?.mode === 'showing',
-      isReadable,
+      kind: textTrack?.kind || trackEl?.kind || trackEl?.getAttribute('kind') || '',
+      isActive: textTrack?.mode === 'showing' || trackEl?.track?.mode === 'showing',
+      isReadable: Boolean(cues.length || trackEl?.src),
       readyState,
-      sampleText: '',
-      src: trackEl.src || '',
-      trackEl
+      sampleText: cues.slice(0, 3).map((cue) => cue.text || '').join(' '),
+      src: trackEl?.src || '',
+      trackEl,
+      textTrack,
+      cues
     };
   });
 }
@@ -184,6 +288,8 @@ function rankTrackPriority(track) {
   if (/english|英文|en/i.test(track.label || '')) score += 80;
   if (track.isActive) score += 40;
   if (track.kind === 'subtitles') score += 20;
+  if (track.textTrack?.mode === 'showing') score += 40;
+  if ((track.cues || []).length > 0) score += 30;
   if (track.isReadable) score += 10;
   return score;
 }
@@ -213,6 +319,41 @@ async function calculateSubtitleHash(content) {
     content
   });
   return hashResult?.hash || '';
+}
+
+async function buildSubtitleSourceFromTextTrack(track) {
+  const cues = Array.from(track?.cues || []);
+  const subtitles = buildSubtitlesFromCues(cues);
+  if (!subtitles.length) return null;
+
+  const content = serializeCueList(cues);
+  const hash = await calculateSubtitleHash(content);
+  return {
+    trackId: track.trackId,
+    url: track.src || '',
+    content,
+    subtitles,
+    hash,
+    detectedLanguage: detectSubtitleLanguage(subtitles, track.languageCode || '')
+  };
+}
+
+async function buildSubtitleSourceFromRemoteTrack(track) {
+  const subtitleUrl = await resolveSubtitleUrlFromTrack(track);
+  const response = await fetch(subtitleUrl);
+  const content = await response.text();
+  const subtitles = subtitleManager.parseVTT(content);
+  if (!subtitles.length) return null;
+
+  const hash = await calculateSubtitleHash(content);
+  return {
+    trackId: track.trackId,
+    url: subtitleUrl,
+    content,
+    subtitles,
+    hash,
+    detectedLanguage: detectSubtitleLanguage(subtitles, track.languageCode || '')
+  };
 }
 
 function buildEligibility(status, reason, detectedLanguage = 'unknown', sourceTrackId = null) {
@@ -264,7 +405,8 @@ async function syncEligibilityState(nextState, trigger = 'page_updated') {
 }
 
 async function evaluateSubtitleEligibility(video = null, subtitles = [], trigger = 'page_updated') {
-  const tracks = scanAvailableTracks(video);
+  const context = resolveActivePlayerContext(video);
+  const tracks = scanAvailableTracks(context);
   if (!tracks.length) {
     return syncEligibilityState(
       buildEligibility('rejected_no_track', REJECTION_MESSAGES.NO_SUBTITLE_TRACK.message, 'unknown', null),
@@ -272,7 +414,7 @@ async function evaluateSubtitleEligibility(video = null, subtitles = [], trigger
     );
   }
 
-  const readableTracks = tracks.filter((t) => t.isReadable);
+  const readableTracks = tracks.filter((t) => t.isReadable || t.isActive);
   if (!readableTracks.length) {
     return syncEligibilityState(
       buildEligibility('pending', '字幕轨道存在但暂不可读，等待加载', 'unknown', null),
@@ -280,40 +422,60 @@ async function evaluateSubtitleEligibility(video = null, subtitles = [], trigger
     );
   }
 
-  const sortedTracks = [...readableTracks].sort((a, b) => rankTrackPriority(b) - rankTrackPriority(a));
+  const showingTracks = readableTracks.filter((track) => track.textTrack?.mode === 'showing' || track.isActive);
+  const candidateTracks = showingTracks.length > 0 ? showingTracks : readableTracks;
+  const sortedTracks = [...candidateTracks].sort((a, b) => rankTrackPriority(b) - rankTrackPriority(a));
   let lastDetectedLanguage = detectSubtitleLanguage(subtitles || []);
   let hadReadableButUnavailableContent = false;
+  let hasPendingEnglishTrack = false;
 
   for (const track of sortedTracks) {
     try {
-      const subtitleUrl = await resolveSubtitleUrlFromTrack(track);
-      const response = await fetch(subtitleUrl);
-      const content = await response.text();
-      const parsedSubtitles = subtitleManager.parseVTT(content);
+      const detectedLanguage = detectSubtitleLanguage(
+        track.cues?.length ? buildSubtitlesFromCues(track.cues) : [],
+        track.languageCode || track.label || ''
+      );
+      lastDetectedLanguage = detectedLanguage || lastDetectedLanguage;
 
-      if (!parsedSubtitles.length) {
-        hadReadableButUnavailableContent = true;
-        continue;
+      if (track.textTrack?.mode === 'showing') {
+        if (detectedLanguage !== 'en') {
+          continue;
+        }
+
+        const source = await buildSubtitleSourceFromTextTrack(track);
+        if (!source) {
+          hasPendingEnglishTrack = true;
+          continue;
+        }
+
+        return syncEligibilityState(
+          {
+            ...buildEligibility('eligible', '已识别英文字幕', 'en', track.trackId),
+            subtitleSource: source
+          },
+          trigger
+        );
       }
 
-      const detectedLanguage = detectSubtitleLanguage(parsedSubtitles, track.languageCode || '');
-      lastDetectedLanguage = detectedLanguage || lastDetectedLanguage;
       if (detectedLanguage !== 'en') {
         continue;
       }
 
-      const subtitleHash = await calculateSubtitleHash(content);
+      if (!track.src) {
+        hasPendingEnglishTrack = true;
+        continue;
+      }
+
+      const source = await buildSubtitleSourceFromRemoteTrack(track);
+      if (!source) {
+        hasPendingEnglishTrack = true;
+        continue;
+      }
+
       return syncEligibilityState(
         {
           ...buildEligibility('eligible', '已识别英文字幕', 'en', track.trackId),
-          subtitleSource: {
-            trackId: track.trackId,
-            url: subtitleUrl,
-            content,
-            subtitles: parsedSubtitles,
-            hash: subtitleHash,
-            detectedLanguage
-          }
+          subtitleSource: source
         },
         trigger
       );
@@ -323,7 +485,7 @@ async function evaluateSubtitleEligibility(video = null, subtitles = [], trigger
     }
   }
 
-  if (hadReadableButUnavailableContent && lastDetectedLanguage === 'unknown') {
+  if (hasPendingEnglishTrack || (hadReadableButUnavailableContent && lastDetectedLanguage === 'unknown')) {
     return syncEligibilityState(
       buildEligibility('pending', '字幕轨道存在但暂不可读，等待加载', 'unknown', null),
       trigger
@@ -670,6 +832,9 @@ class SubtitleManager {
     translationSession.fallbackService = null;
     translationSession.startedAt = Date.now();
     translationSession.completedAt = 0;
+    const currentConfig = await this.getCurrentTranslationConfig();
+    translationSession.activeService = currentConfig?.service === 'openai' ? 'openai' : 'google';
+    translationSession.activeServiceDisplayName = getServiceDisplayName(translationSession.activeService);
 
     this.refreshSessionCounts();
     updateSessionUI(this);
@@ -868,7 +1033,7 @@ class SubtitleDisplay {
    * 初始化字幕显示容器
    */
   init() {
-    this.video = document.querySelector('video');
+    this.video = getActiveVideoElement();
     if (!this.video) {
       console.error('[BilingualSubs] Video element not found');
       return false;
@@ -899,7 +1064,8 @@ class SubtitleDisplay {
     }
 
     // 找到视频容器的父级
-    const videoContainer = this.video.closest('.lesson-video-player') ||
+    const videoContainer = this.video.closest('[data-media-player]') ||
+                           this.video.closest('.lesson-video-player') ||
                            this.video.parentElement?.parentElement ||
                            document.body;
 
@@ -1008,9 +1174,15 @@ class SubtitleDisplay {
   /**
    * 显示翻译进度
    */
-  showProgress(progress) {
+  showProgress(progressOrState) {
     if (this.progressElement) {
-      this.progressElement.innerHTML = `<div class="sub-progress">🔄 翻译进度：${progress}%</div>`;
+      const progress = typeof progressOrState === 'number'
+        ? progressOrState
+        : (progressOrState?.progress || 0);
+      const modeName = typeof progressOrState === 'object' && progressOrState?.modeName
+        ? progressOrState.modeName
+        : getServiceDisplayName(translationSession.activeService);
+      this.progressElement.innerHTML = `<div class="sub-progress">🔄 ${modeName} · 翻译进度：${progress}%</div>`;
       this.progressElement.style.display = 'block';
       this.container.style.display = 'block';
     }
@@ -1104,7 +1276,7 @@ class ControlPanel {
 
     try {
       const cfg = await this.manager.getCurrentTranslationConfig();
-      const modeName = cfg?.service === 'openai' ? 'OpenAI 接口' : 'Google 翻译';
+      const modeName = getServiceDisplayName(cfg?.service);
       indicator.textContent = `当前翻译模式：${modeName}`;
     } catch {
       indicator.textContent = '当前翻译模式：Google 翻译';
@@ -1136,9 +1308,9 @@ class ControlPanel {
       const statusEl = document.getElementById('bilingual-subs-status');
       await this.updateTranslationModeIndicator();
       const cfg = await this.manager.getCurrentTranslationConfig();
-      const modeName = cfg?.service === 'openai' ? 'OpenAI 接口' : 'Google 翻译';
+      const modeName = getServiceDisplayName(cfg?.service);
 
-      const refreshedEligibility = await evaluateSubtitleEligibility(document.querySelector('video'), this.manager.originalSubtitles, 'user_retry');
+      const refreshedEligibility = await loadEligibleSource(getActiveVideoElement(), 'user_retry');
       if (refreshedEligibility.status !== 'eligible') {
         showRejectionNotice(refreshedEligibility);
         statusEl.textContent = `${getRejectionNoticeByStatus(refreshedEligibility.status).message}。${getRejectionNoticeByStatus(refreshedEligibility.status).actionHint}`;
@@ -1146,7 +1318,20 @@ class ControlPanel {
       }
 
       hideRejectionNotice();
-      this.manager.setSourceTrack(refreshedEligibility.sourceTrackId);
+      if (refreshedEligibility.subtitleSource) {
+        const sourceChanged = this.manager.applySubtitleSource(
+          refreshedEligibility.subtitleSource,
+          this.manager.originalSubtitles.length === 0
+        );
+        this.manager.setSourceTrack(refreshedEligibility.sourceTrackId);
+        if (sourceChanged) {
+          await this.manager.loadFromCache(refreshedEligibility.subtitleSource);
+          subtitleDisplay?.updateSubtitle();
+          updateSessionUI(this.manager);
+        }
+      } else {
+        this.manager.setSourceTrack(refreshedEligibility.sourceTrackId);
+      }
       statusEl.textContent = `正在使用 ${modeName} 翻译...`;
 
       try {
@@ -1158,10 +1343,11 @@ class ControlPanel {
             const percent = session.totalCount > 0
               ? Math.round((processedCount / session.totalCount) * 100)
               : 0;
+            const activeModeName = session.activeServiceDisplayName || getServiceDisplayName(session.activeService);
             statusEl.textContent = session.failedCount > 0
-              ? `已翻译 ${session.doneCount}/${session.totalCount} 条，失败 ${session.failedCount} 条`
-              : `已翻译 ${session.doneCount}/${session.totalCount} 条`;
-            this.display.showProgress(percent);
+              ? `${activeModeName} · 已翻译 ${session.doneCount}/${session.totalCount} 条，失败 ${session.failedCount} 条`
+              : `${activeModeName} · 已翻译 ${session.doneCount}/${session.totalCount} 条`;
+            this.display.showProgress({ progress: percent, modeName: activeModeName });
           }
         });
         updateSessionUI(this.manager);
@@ -1248,17 +1434,18 @@ function updateSessionUI(manager) {
   const statusEl = document.getElementById('bilingual-subs-status');
   const processedCount = snapshot.doneCount + snapshot.failedCount;
   const total = snapshot.totalCount || manager.originalSubtitles.length;
+  const modeName = snapshot.activeServiceDisplayName || getServiceDisplayName(snapshot.activeService);
 
   if (statusEl && total > 0) {
     const fallbackText = snapshot.fallbackService === 'google' ? '（已自动降级到 Google）' : '';
     if (snapshot.isRunning) {
       statusEl.textContent = snapshot.failedCount > 0
-        ? `已翻译 ${snapshot.translatedCount}/${total} 条，失败 ${snapshot.failedCount} 条${fallbackText}`
-        : `已翻译 ${snapshot.translatedCount}/${total} 条${fallbackText}`;
+        ? `${modeName} · 已翻译 ${snapshot.translatedCount}/${total} 条，失败 ${snapshot.failedCount} 条${fallbackText}`
+        : `${modeName} · 已翻译 ${snapshot.translatedCount}/${total} 条${fallbackText}`;
     } else if (processedCount >= total) {
       statusEl.textContent = snapshot.failedCount > 0
-        ? `翻译完成（失败 ${snapshot.failedCount} 条，可点击重试）${fallbackText}`
-        : `翻译完成（已生成 ${snapshot.translatedCount} 条）${fallbackText}`;
+        ? `${modeName} · 翻译完成（失败 ${snapshot.failedCount} 条，可点击重试）${fallbackText}`
+        : `${modeName} · 翻译完成（已生成 ${snapshot.translatedCount} 条）${fallbackText}`;
     } else {
       statusEl.textContent = `等待翻译 (${total} 条)`;
     }
@@ -1267,7 +1454,7 @@ function updateSessionUI(manager) {
   if (subtitleDisplay) {
     if (snapshot.isRunning) {
       const percent = total > 0 ? Math.round((processedCount / total) * 100) : 0;
-      subtitleDisplay.showProgress(percent);
+      subtitleDisplay.showProgress({ progress: percent, modeName });
     } else {
       subtitleDisplay.hideProgress();
     }
@@ -1307,7 +1494,7 @@ function hideRejectionNotice() {
  * 使用 MutationObserver 监听字幕轨道变化
  */
 function observeSubtitleTrack() {
-  const video = document.querySelector('video');
+  const video = getActiveVideoElement();
   if (!video) return null;
 
   const observer = new MutationObserver((mutations) => {
@@ -1327,26 +1514,35 @@ function observeSubtitleTrack() {
 }
 
 function getTrackSnapshot(video) {
-  if (!video) return '';
-  const tracks = scanAvailableTracks(video);
-  const textTrackModes = Array.from(video.textTracks || []).map((track) => track.mode).join('|');
-  return JSON.stringify(tracks.map((track) => ({
-    id: track.trackId,
-    src: track.src,
-    lang: track.languageCode,
-    label: track.label,
-    active: track.isActive
-  }))) + `::${textTrackModes}`;
+  const context = resolveActivePlayerContext(video);
+  if (!context?.videoEl) return '';
+  const tracks = scanAvailableTracks(context);
+  const textTrackModes = Array.from(context.videoEl.textTracks || []).map((track) => `${track.language}:${track.mode}`).join('|');
+  const captionText = (context.captionsEl?.textContent || '').trim();
+  return JSON.stringify({
+    currentSrc: context.videoEl.currentSrc,
+    tracks: tracks.map((track) => ({
+      id: track.trackId,
+      src: track.src,
+      lang: track.languageCode,
+      label: track.label,
+      active: track.isActive,
+      cues: track.cues?.length || 0
+    })),
+    textTrackModes,
+    captionText
+  });
 }
 
 function observeTrackChanges(video) {
-  if (!video) return null;
+  if (!resolveActivePlayerContext(video)?.videoEl) return null;
   if (trackChangeObserver) {
     clearInterval(trackChangeObserver);
   }
   let previousSnapshot = getTrackSnapshot(video);
   trackChangeObserver = setInterval(async () => {
-    const currentSnapshot = getTrackSnapshot(video);
+    const activeVideo = getActiveVideoElement(video);
+    const currentSnapshot = getTrackSnapshot(activeVideo);
     if (currentSnapshot === previousSnapshot) {
       return;
     }
@@ -1358,9 +1554,13 @@ function observeTrackChanges(video) {
 
     trackChangeDebounceTimer = setTimeout(async () => {
       const previous = eligibilityState;
-      const next = await evaluateSubtitleEligibility(video, subtitleManager.originalSubtitles, 'track_changed');
+      const activeVideoForCheck = getActiveVideoElement(activeVideo);
+      const next = await evaluateSubtitleEligibility(activeVideoForCheck, subtitleManager.originalSubtitles, 'track_changed');
       if (next.status === 'eligible') {
-        const sourceChanged = subtitleManager.applySubtitleSource(next.subtitleSource || null);
+        const sourceChanged = subtitleManager.applySubtitleSource(
+          next.subtitleSource || null,
+          subtitleManager.originalSubtitles.length === 0
+        );
         subtitleManager.setSourceTrack(next.sourceTrackId);
         hideRejectionNotice();
         if (sourceChanged) {
@@ -1384,11 +1584,11 @@ function observeTrackChanges(video) {
 }
 
 async function loadEligibleSource(video, trigger = 'page_updated') {
-  let eligibility = await evaluateSubtitleEligibility(video, subtitleManager.originalSubtitles, trigger);
+  let eligibility = await evaluateSubtitleEligibility(getActiveVideoElement(video), subtitleManager.originalSubtitles, trigger);
   if (eligibility.status === 'pending') {
     for (let retry = 0; retry < 3 && eligibility.status === 'pending'; retry++) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
-      eligibility = await evaluateSubtitleEligibility(video, subtitleManager.originalSubtitles, trigger);
+      eligibility = await evaluateSubtitleEligibility(getActiveVideoElement(video), subtitleManager.originalSubtitles, trigger);
     }
   }
   return eligibility;
@@ -1434,10 +1634,10 @@ async function init() {
   let track = null;
 
   for (let i = 0; i < maxAttempts; i++) {
-    video = document.querySelector('video');
+    video = getActiveVideoElement();
     if (video) {
       track = video.querySelector('track');
-      if (track) break;
+      if (track || Array.from(video.textTracks || []).length > 0) break;
     }
     await new Promise(resolve => setTimeout(resolve, 300));
   }
@@ -1449,7 +1649,7 @@ async function init() {
   }
 
   // 如果没有检测到 track，设置 MutationObserver 监听
-  if (!track) {
+  if (!track && !(Array.from(video.textTracks || []).length > 0)) {
     debugLog('No track found, setting up observer');
     const observer = observeSubtitleTrack();
     if (observer) {
@@ -1471,6 +1671,12 @@ async function init() {
  * 视频准备就绪后初始化
  */
 async function initializeAfterVideoReady(video, track = null) {
+  const activeVideo = getActiveVideoElement(video);
+  if (!activeVideo) {
+    console.error('[BilingualSubs] Active video element not found');
+    return;
+  }
+
   teardownRuntime();
 
   // 初始化显示
@@ -1484,11 +1690,11 @@ async function initializeAfterVideoReady(video, track = null) {
   controlPanel = new ControlPanel(subtitleDisplay, subtitleManager);
   controlPanel.create();
 
-  observeTrackChanges(video);
+  observeTrackChanges(activeVideo);
 
   // 获取字幕
   try {
-    const eligibility = await loadEligibleSource(video, 'page_updated');
+    const eligibility = await loadEligibleSource(activeVideo, 'page_updated');
 
     if (eligibility.status !== 'eligible') {
       showRejectionNotice(eligibility);
@@ -1528,7 +1734,7 @@ async function initializeAfterVideoReady(video, track = null) {
         setTimeout(async () => {
           const statusEl = document.getElementById('bilingual-subs-status');
           const cfg = await subtitleManager.getCurrentTranslationConfig();
-          const modeName = cfg?.service === 'openai' ? 'OpenAI 接口' : 'Google 翻译';
+          const modeName = getServiceDisplayName(cfg?.service);
           if (statusEl) {
             statusEl.textContent = `正在基于英文字幕翻译（${modeName}）...`;
           }
@@ -1540,12 +1746,13 @@ async function initializeAfterVideoReady(video, track = null) {
                 const percent = session.totalCount > 0
                   ? Math.round((processedCount / session.totalCount) * 100)
                   : 0;
+                const activeModeName = session.activeServiceDisplayName || getServiceDisplayName(session.activeService);
                 if (statusEl) {
                   statusEl.textContent = session.failedCount > 0
-                    ? `已翻译 ${session.translatedCount}/${session.totalCount} 条，失败 ${session.failedCount} 条`
-                    : `已翻译 ${session.translatedCount}/${session.totalCount} 条`;
+                    ? `${activeModeName} · 已翻译 ${session.translatedCount}/${session.totalCount} 条，失败 ${session.failedCount} 条`
+                    : `${activeModeName} · 已翻译 ${session.translatedCount}/${session.totalCount} 条`;
                 }
-                subtitleDisplay.showProgress(percent);
+                subtitleDisplay.showProgress({ progress: percent, modeName: activeModeName });
               }
             });
             updateSessionUI(subtitleManager);
@@ -1586,8 +1793,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case 'startTranslation':
-      evaluateSubtitleEligibility(document.querySelector('video'), subtitleManager.originalSubtitles, 'user_retry')
-        .then((eligibility) => {
+      loadEligibleSource(getActiveVideoElement(), 'user_retry')
+        .then(async (eligibility) => {
           if (eligibility.status !== 'eligible') {
             showRejectionNotice(eligibility);
             const notice = getRejectionNoticeByStatus(eligibility.status);
@@ -1601,7 +1808,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
 
           if (eligibility.subtitleSource) {
-            subtitleManager.applySubtitleSource(eligibility.subtitleSource);
+            const sourceChanged = subtitleManager.applySubtitleSource(
+              eligibility.subtitleSource,
+              subtitleManager.originalSubtitles.length === 0
+            );
+            if (sourceChanged) {
+              try {
+                await subtitleManager.loadFromCache(eligibility.subtitleSource);
+                subtitleDisplay?.updateSubtitle();
+                updateSessionUI(subtitleManager);
+              } catch (error) {
+                debugLog('Popup startTranslation load cache failed:', error);
+              }
+            }
           }
           subtitleManager.setSourceTrack(eligibility.sourceTrackId);
           hideRejectionNotice();
@@ -1613,7 +1832,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               const percent = session.totalCount > 0
                 ? Math.round((processedCount / session.totalCount) * 100)
                 : 0;
-              subtitleDisplay.showProgress(percent);
+              const modeName = session.activeServiceDisplayName || getServiceDisplayName(session.activeService);
+              subtitleDisplay.showProgress({ progress: percent, modeName });
             }
           }).then(() => {
             updateSessionUI(subtitleManager);
