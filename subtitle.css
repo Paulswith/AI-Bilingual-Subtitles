@@ -49,6 +49,10 @@
   text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
 }
 
+.bilingual-subs-progress {
+  margin-top: 8px;
+}
+
 .bilingual-subs-text .sub-chinese {
   font-size: 20px;
   font-weight: 500;
@@ -59,6 +63,12 @@
 .bilingual-subs-text .sub-english {
   font-size: 16px;
   color: rgba(255, 255, 255, 0.85);
+}
+
+.bilingual-subs-text .sub-failed {
+  font-size: 16px;
+  color: #f59e0b;
+  margin-bottom: 4px;
 }
 
 .bilingual-subs-text .sub-progress {

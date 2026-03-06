@@ -636,6 +636,12 @@
             <input type="number" id="max-retries" min="0" max="5" value="3">
             <p class="input-hint">翻译失败时的重试次数</p>
           </div>
+
+          <div class="form-group">
+            <label for="timeout-ms">请求超时 (ms)</label>
+            <input type="number" id="timeout-ms" min="1000" max="120000" value="30000" step="1000">
+            <p class="input-hint">单次翻译请求超时阈值，默认 30000ms</p>
+          </div>
         </div>
 
         <div class="form-group" style="margin-top: 20px;">
@@ -865,7 +871,7 @@
 
     <footer>
       <p>
-        AI 双语字幕扩展 v2.1.0 |
+        AI 双语字幕扩展 v2.2.0 |
         <a href="https://github.com" target="_blank">GitHub</a> |
         <a href="https://github.com/issues" target="_blank">问题反馈</a>
       </p>

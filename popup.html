@@ -245,6 +245,67 @@
     .api-key-status .status-indicator.unconfigured {
       color: #666;
     }
+
+    /* 翻译模式指示器样式 (US1 - T011) */
+    .translation-mode-display {
+      margin-top: 8px;
+      padding: 8px 12px;
+      background: rgba(59, 130, 246, 0.1);
+      border-radius: 4px;
+      font-size: 12px;
+      display: inline-block;
+    }
+
+    .translation-mode-display .mode-label {
+      color: #9ca3af;
+      margin-right: 6px;
+    }
+
+    .translation-mode-display .mode-value {
+      color: #60a5fa;
+      font-weight: 500;
+    }
+
+    /* 翻译状态指示器样式 */
+    .translation-status {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .translation-status.info {
+      background: rgba(59, 130, 246, 0.1);
+      color: #60a5fa;
+    }
+
+    .translation-status.success {
+      background: rgba(74, 222, 128, 0.1);
+      color: #4ade80;
+    }
+
+    .translation-status.error {
+      background: rgba(248, 113, 113, 0.1);
+      color: #f87171;
+    }
+
+     .translation-status.warning {
+      background: rgba(251, 191, 36, 0.1);
+      color: #fbbf24;
+    }
+
+    #current-status.eligible {
+      color: #4ade80;
+      font-weight: 600;
+    }
+
+    #current-status.rejected {
+      color: #f59e0b;
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -263,6 +324,10 @@
     <div class="row">
       <label>缓存状态:</label>
       <span id="cache-status">-</span>
+    </div>
+    <div class="row">
+      <label>当前状态:</label>
+      <span id="current-status">待机</span>
     </div>
     <div id="progress-container" class="hidden">
       <div class="progress-bar">
@@ -303,6 +368,11 @@
     <div class="api-key-status" id="api-key-status" style="display: none;">
       <span class="status-indicator configured">✓ API Key 已配置</span>
     </div>
+    <!-- 翻译模式指示器 (US1 - T010) -->
+    <div class="translation-mode-display" id="translation-mode-display" style="display: none;">
+      <span class="mode-label">当前模式：</span>
+      <span id="current-mode" class="mode-value">Google 翻译</span>
+    </div>
 
     <div id="openai-config" class="api-config-section hidden">
       <label>API Base URL</label>
@@ -321,6 +391,12 @@
       </div>
     </div>
 
+    <!-- 翻译状态指示器 -->
+    <div id="translation-status" class="translation-status" style="display: none;">
+      <span id="translation-status-icon">🔄</span>
+      <span id="translation-status-text">正在使用 Google 翻译...</span>
+    </div>
+
     <button id="test-translation" class="secondary" style="width: 100%; margin-top: 12px;">
       测试翻译服务
     </button>
@@ -335,7 +411,7 @@
   <div id="status" class="status hidden"></div>
 
   <footer>
-    <span>v2.2.0</span>
+    <span>v3.0.0</span>
     <div style="display: flex; gap: 8px; align-items: center;">
       <a href="options.html" target="_blank" style="color: #4ade80; text-decoration: none; font-size: 12px;">⚙️ 高级设置</a>
       <a href="https://github.com" target="_blank" style="color: #4ade80; text-decoration: none;">GitHub</a>

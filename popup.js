@@ -8,6 +8,7 @@ const elements = {
   subtitleCount: document.getElementById('subtitle-count'),
   translatedCount: document.getElementById('translated-count'),
   cacheStatus: document.getElementById('cache-status'),
+  currentStatus: document.getElementById('current-status'),
   progressContainer: document.getElementById('progress-container'),
   progressFill: document.getElementById('progress-fill'),
   displayMode: document.getElementById('display-mode'),
@@ -26,7 +27,13 @@ const elements = {
   exportBtn: document.getElementById('export-btn'),
   status: document.getElementById('status'),
   // API Key 状态指示器 (US3 - T015)
-  apiKeyStatus: document.getElementById('api-key-status')
+  apiKeyStatus: document.getElementById('api-key-status'),
+  // 翻译状态指示器
+  translationStatus: document.getElementById('translation-status'),
+  translationStatusText: document.getElementById('translation-status-text'),
+  // 翻译模式指示器 (US1 - T010)
+  translationModeDisplay: document.getElementById('translation-mode-display'),
+  currentMode: document.getElementById('current-mode')
 };
 
 // ============== 工具函数 ==============
@@ -52,6 +59,113 @@ function updateProgress(percent) {
   elements.progressFill.style.width = `${percent}%`;
 }
 
+function setCurrentStatusClass(className = '') {
+  if (!elements.currentStatus) return;
+  elements.currentStatus.classList.remove('eligible', 'rejected');
+  if (className) {
+    elements.currentStatus.classList.add(className);
+  }
+}
+
+/**
+ * 显示翻译状态 (支持方法、错误等)
+ */
+function showTranslationStatus(message, type = 'info', duration = 0) {
+  if (!elements.translationStatus) return;
+
+  elements.translationStatus.style.display = 'flex';
+  elements.translationStatus.className = `translation-status ${type}`;
+  elements.translationStatusText.textContent = message;
+
+  if (duration > 0) {
+    setTimeout(() => {
+      elements.translationStatus.style.display = 'none';
+    }, duration);
+  }
+}
+
+/**
+ * 隐藏翻译状态
+ */
+function hideTranslationStatus() {
+  if (elements.translationStatus) {
+    elements.translationStatus.style.display = 'none';
+  }
+}
+
+/**
+ * 更新翻译模式指示器 (US1 - T012)
+ */
+function updateModeIndicator(service) {
+  if (!elements.translationModeDisplay || !elements.currentMode) return;
+
+  const modeName = service === 'google' ? 'Google 翻译' : 'OpenAI 接口';
+  elements.currentMode.textContent = modeName;
+  elements.translationModeDisplay.style.display = 'inline-block';
+}
+
+async function readStoredConfig() {
+  const result = await chrome.storage.sync.get(['config']);
+  return result.config || {};
+}
+
+async function saveMergedConfig(partialConfig) {
+  const currentConfig = await readStoredConfig();
+  const nextConfig = {
+    ...currentConfig,
+    ...partialConfig,
+    openai: {
+      ...(currentConfig.openai || {}),
+      ...(partialConfig.openai || {})
+    }
+  };
+
+  await chrome.storage.sync.set({ config: nextConfig });
+  try {
+    await chrome.runtime.sendMessage({ action: 'loadConfig' });
+  } catch {
+    // background 可能尚未激活
+  }
+  return nextConfig;
+}
+
+/**
+ * 加载并显示当前翻译模式 (US1 - T014)
+ */
+async function loadTranslationMode() {
+  try {
+    const result = await chrome.runtime.sendMessage({ action: 'getTranslationMode' });
+    if (result) {
+      updateModeIndicator(result.service);
+    }
+  } catch (error) {
+    console.error('[BilingualSubs] Failed to load translation mode:', error);
+  }
+}
+
+/**
+ * 保存 OpenAI 配置（输入即保存，API Key 除外）
+ */
+async function saveOpenAIConfigToStorage() {
+  try {
+    const baseUrl = elements.openaiBaseUrl.value.trim();
+    const model = elements.openaiModel.value.trim();
+
+    if (baseUrl || model) {
+      await saveMergedConfig({
+        openai: {
+          baseUrl,
+          model
+        }
+      });
+
+      console.log('[BilingualSubs] OpenAI config auto-saved');
+    }
+  } catch (error) {
+    console.error('[BilingualSubs] Failed to auto-save config:', error);
+  }
+}
+
 // ============== 初始化 ==============
 async function init() {
   // 获取当前标签页
@@ -67,6 +181,9 @@ async function init() {
 
   // 更新 API Key 状态 (US3 - T019)
   await updateApiKeyStatus();
+
+  // 加载翻译模式指示器 (US1 - T014)
+  await loadTranslationMode();
 
   // 监听配置变更 (US3 - T018)
   setupApiKeyStatusListener();
@@ -165,19 +282,52 @@ async function updateStatus() {
       elements.translatedCount.textContent = status.translatedCount || 0;
       elements.cacheStatus.textContent = status.hasCache ? '✅ 已缓存' : '❌ 无缓存';
 
-      if (status.isTranslating) {
-        elements.currentStatus.textContent = `翻译中... ${status.progress}%`;
+      const session = status.session || null;
+      if (session?.totalCount > 0) {
+        const processedCount = (session.doneCount || 0) + (session.failedCount || 0);
+        const percent = Math.round((processedCount / session.totalCount) * 100);
+        const fallbackText = session.fallbackService === 'google' ? '（已自动降级到 Google）' : '';
         showProgress(true);
-        updateProgress(status.progress);
-      } else if (status.translatedCount > 0) {
-        elements.cacheStatus.textContent = '✅ 已就绪';
+        updateProgress(percent);
+
+        if (session.isRunning) {
+          elements.currentStatus.textContent = session.failedCount > 0
+            ? `已翻译 ${session.translatedCount || 0}/${session.totalCount} 条，失败 ${session.failedCount} 条${fallbackText}`
+            : `已翻译 ${session.translatedCount || 0}/${session.totalCount} 条${fallbackText}`;
+          setCurrentStatusClass('');
+        } else if (processedCount >= session.totalCount) {
+          elements.currentStatus.textContent = session.failedCount > 0
+            ? `翻译完成（失败 ${session.failedCount} 条）${fallbackText}`
+            : `翻译完成（已生成 ${session.translatedCount || 0} 条）${fallbackText}`;
+          setCurrentStatusClass('');
+          elements.cacheStatus.textContent = status.hasCache ? '✅ 已缓存' : '✅ 已就绪';
+        } else {
+          elements.currentStatus.textContent = session.failedCount > 0
+            ? `已翻译 ${session.translatedCount || 0}/${session.totalCount} 条，失败 ${session.failedCount} 条${fallbackText}`
+            : `已翻译 ${session.translatedCount || 0}/${session.totalCount} 条${fallbackText}`;
+          setCurrentStatusClass('');
+        }
+      } else if (status.eligibility?.status === 'eligible') {
+        elements.currentStatus.textContent = '英文字幕已识别';
+        setCurrentStatusClass('eligible');
+        showProgress(false);
+      } else if (status.eligibility?.status?.startsWith('rejected')) {
+        const reason = status.eligibility.reason || '拒绝生成';
+        elements.currentStatus.textContent = `${reason}，请切换到英文字幕后重试`;
+        setCurrentStatusClass('rejected');
+        showProgress(false);
       } else {
-        elements.cacheStatus.textContent = '等待翻译';
+        setCurrentStatusClass('');
+        showProgress(false);
+        if (!status.isTranslating && !(status.translatedCount > 0)) {
+          elements.cacheStatus.textContent = '等待翻译';
+        }
       }
     } else {
       elements.subtitleCount.textContent = '-';
       elements.translatedCount.textContent = '-';
       elements.cacheStatus.textContent = '未加载';
+      setCurrentStatusClass('');
     }
   } catch (error) {
     console.error('Failed to get status:', error);
@@ -217,17 +367,28 @@ function bindEvents() {
     const service = e.target.value;
     updateServiceUI(service);
 
-    // 直接保存到 storage
-    await chrome.storage.sync.set({
-      config: {
-        translationService: service
-      }
+    await saveMergedConfig({
+      translationService: service
     });
 
-    // 通知 background
-    try {
-      await chrome.runtime.sendMessage({ action: 'loadConfig' });
-    } catch (e) {}
+    // 更新翻译模式指示器 (US1 - T013)
+    updateModeIndicator(service);
+
+    // 显示当前使用的翻译方法
+    if (service === 'google') {
+      showTranslationStatus('正在使用 Google 翻译', 'info', 2000);
+    } else {
+      showTranslationStatus('正在使用 OpenAI 兼容接口', 'info', 2000);
+    }
+  });
+
+  // OpenAI 配置输入框 - 输入即保存 (Base URL 和 Model)
+  elements.openaiBaseUrl.addEventListener('input', () => {
+    saveOpenAIConfigToStorage();
+  });
+
+  elements.openaiModel.addEventListener('input', () => {
+    saveOpenAIConfigToStorage();
   });
 
   // 保存 OpenAI 配置
@@ -244,28 +405,21 @@ function bindEvents() {
     // 移除末尾的斜杠
     const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
 
-    // 直接保存到 storage
-    await chrome.storage.sync.set({
-      config: {
-        translationService: 'openai',
-        openai: {
-          baseUrl: normalizedBaseUrl,
-          apiKey: apiKey,
-          model: model,
-          prompt: '你是一个专业的字幕翻译助手。请将以下英文内容翻译成自然流畅的中文，保持专业术语准确，译文简洁易懂。'
-        }
+    await saveMergedConfig({
+      translationService: 'openai',
+      openai: {
+        baseUrl: normalizedBaseUrl,
+        apiKey,
+        model,
+        prompt: '你是一个专业的字幕翻译助手。请将以下英文内容翻译成自然流畅的中文，保持专业术语准确，译文简洁易懂。'
       }
     });
-
-    // 通知 background
-    try {
-      await chrome.runtime.sendMessage({ action: 'loadConfig' });
-    } catch (e) {}
 
     // 更新 API Key 状态显示
     updateApiKeyStatus();
 
     showStatus('✅ 配置已保存', 'success', 3000);
+    showTranslationStatus('配置已保存，使用 OpenAI 翻译', 'success', 3000);
   });
 
   // 测试翻译服务
@@ -273,6 +427,13 @@ function bindEvents() {
     const service = elements.translationService.value;
     elements.testTranslation.disabled = true;
     elements.testTranslation.textContent = '测试中...';
+
+    // 显示测试状态
+    if (service === 'google') {
+      showTranslationStatus('正在测试 Google 翻译...', 'info');
+    } else {
+      showTranslationStatus('正在测试 OpenAI 接口...', 'info');
+    }
 
     const result = await chrome.runtime.sendMessage({
       action: 'testTranslation',
@@ -283,9 +444,9 @@ function bindEvents() {
     elements.testTranslation.textContent = '测试翻译服务';
 
     if (result.success) {
-      showStatus(`✅ 测试成功：${result.result}`, 'success', 5000);
+      showTranslationStatus(`✅ 测试成功：${result.result}`, 'success', 5000);
     } else {
-      showStatus(`❌ 测试失败：${result.error}`, 'error', 5000);
+      showTranslationStatus(`❌ 测试失败：${result.error}`, 'error', 5000);
     }
   });
 
@@ -293,30 +454,38 @@ function bindEvents() {
   elements.translateBtn.addEventListener('click', async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-    showStatus('正在翻译...', 'loading');
+    // 获取当前翻译服务
+    const service = elements.translationService.value;
+    const serviceName = service === 'google' ? 'Google 翻译' : 'OpenAI 接口';
+
+    // 显示翻译状态
+    showTranslationStatus(`正在使用 ${serviceName} 翻译...`, 'info');
     showProgress(true);
     elements.translateBtn.disabled = true;
 
-    chrome.tabs.sendMessage(tab.id, { action: 'startTranslation' }, (response) => {
-      if (response?.success) {
-        showStatus('✅ 翻译完成!', 'success', 3000);
-        updateStatus();
-      } else {
-        showStatus('❌ 翻译失败', 'error', 3000);
-      }
-      elements.translateBtn.disabled = false;
-    });
-
-    // 定期更新进度
     const progressInterval = setInterval(async () => {
       await updateStatus();
     }, 1000);
 
-    // 30 秒后停止更新
-    setTimeout(() => {
+    chrome.tabs.sendMessage(tab.id, { action: 'startTranslation' }, (response) => {
       clearInterval(progressInterval);
+      if (chrome.runtime.lastError) {
+        showTranslationStatus(`❌ 翻译失败：${chrome.runtime.lastError.message}`, 'error', 5000);
+        elements.translateBtn.disabled = false;
+        return;
+      }
+
+      if (response?.success) {
+        showTranslationStatus(`✅ 翻译完成 (${serviceName})`, 'success', 3000);
+        updateStatus();
+      } else {
+        const errorText = response?.suggestedAction
+          ? `${response?.errorMessage || response?.error || '未知错误'}：${response.suggestedAction}`
+          : (response?.error || '未知错误');
+        showTranslationStatus(`❌ 翻译失败：${errorText}`, 'error', 5000);
+      }
       elements.translateBtn.disabled = false;
-    }, 30000);
+    });
   });
 
   // 清除缓存
